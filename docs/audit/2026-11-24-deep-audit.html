@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cliproxy-dashboard 深度审核报告 · 2026-11-24</title>
+<style>
+.rp {
+  --r-fg: var(--foreground, #0b0b0b);
+  --r-muted: var(--muted-foreground, #52514e);
+  --r-faint: #898781;
+  --r-card: var(--card, #fcfcfb);
+  --r-soft: var(--secondary, #f0efec);
+  --r-border: var(--border, rgba(11,11,11,0.12));
+  --r-accent: var(--primary, #2a78d6);
+  --r-radius: var(--radius, 10px);
+  --s1: var(--chart-1, #2a78d6);
+  --s2: var(--chart-2, #eb6834);
+  --s3: var(--chart-3, #1baf7a);
+  --s4: var(--chart-4, #eda100);
+  --s5: var(--chart-5, #e87ba4);
+  --s-other: #9a9891;
+  --sev-critical: #d03b3b;
+  --sev-high: #ec835a;
+  --sev-medium: #fab219;
+  --sev-low: #898781;
+  --mono: var(--font-mono, ui-monospace, "JetBrains Mono", Menlo, monospace);
+  font-family: var(--font-sans, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif);
+  color: var(--r-fg);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 980px;
+  margin: 0 auto;
+}
+.rp * { box-sizing: border-box; }
+.rp h1 { font-size: 26px; line-height: 1.25; margin: 4px 0 6px; letter-spacing: -0.01em; }
+.rp h2 { font-size: 19px; margin: 44px 0 6px; padding-top: 4px; }
+.rp h3 { font-size: 15px; margin: 22px 0 6px; }
+.rp p { margin: 6px 0; }
+.rp .lead { color: var(--r-muted); margin-bottom: 14px; }
+.rp .muted { color: var(--r-muted); }
+.rp .small { font-size: 12px; }
+.rp code, .rp .mono { font-family: var(--mono); font-size: 12px; }
+.rp code { background: var(--r-soft); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+.rp .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--r-muted); }
+.rp .box { border: 1px solid var(--r-border); border-radius: var(--r-radius); padding: 16px; background: var(--r-card); }
+.rp .grid { display: grid; gap: 12px; }
+.rp .tiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.rp .tile .v { font-size: 26px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+.rp .tile .d { font-size: 12px; color: var(--r-muted); margin-top: 4px; }
+.rp .sevbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 2px; margin-top: 10px; }
+.rp .sevbar span { display: block; height: 100%; }
+.rp .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; flex: none; }
+.rp .badge { display: inline-flex; align-items: center; font-size: 12px; white-space: nowrap; }
+.rp .tag { display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--r-border); color: var(--r-muted); white-space: nowrap; line-height: 18px; }
+.rp .tag.v { color: var(--r-fg); }
+.rp ul.tight { margin: 6px 0; padding-left: 20px; }
+.rp ul.tight li { margin: 3px 0; }
+.rp .callout { border-left: 3px solid var(--sev-high); padding: 10px 14px; background: var(--r-soft); border-radius: 0 var(--r-radius) var(--r-radius) 0; margin: 12px 0; }
+.rp .two { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+
+/* heatmap */
+.rp table.hm { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 13px; }
+.rp table.hm th { font-weight: 500; color: var(--r-muted); font-size: 12px; text-align: left; padding: 2px 6px; white-space: nowrap; }
+.rp table.hm th.c { text-align: center; }
+.rp table.hm td.cell { text-align: center; border-radius: 6px; height: 34px; min-width: 48px; cursor: pointer; font-family: var(--mono); font-variant-numeric: tabular-nums; position: relative; }
+.rp table.hm td.cell:focus-visible, .rp .chip:focus-visible, .rp .frow:focus-visible, .rp button:focus-visible { outline: 2px solid var(--r-accent); outline-offset: 1px; }
+.rp table.hm td.cell.zero { color: var(--r-faint); cursor: default; }
+.rp table.hm td.tot { text-align: center; font-family: var(--mono); color: var(--r-muted); }
+
+/* priority matrix */
+.rp .pm { display: grid; grid-template-columns: 74px 1fr 1fr; gap: 3px; }
+.rp .pm .hd { font-size: 12px; color: var(--r-muted); padding: 2px 6px; }
+.rp .pm .rowh { font-size: 12px; color: var(--r-muted); padding: 8px 6px; }
+.rp .pm .cellp { background: var(--r-soft); border-radius: 6px; padding: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start; min-height: 38px; }
+.rp .pm .cellp.hot { outline: 1px solid var(--r-border); }
+.rp .chip { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--r-card); border: 1px solid var(--r-border); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; line-height: 18px; }
+.rp .chip .dot { width: 7px; height: 7px; margin: 0; }
+.rp .chip:hover { border-color: var(--r-fg); }
+
+/* top10 */
+.rp .top { counter-reset: t; display: grid; gap: 10px; }
+.rp .top .it { display: grid; grid-template-columns: 30px 1fr; gap: 10px; }
+.rp .top .n { font-family: var(--mono); font-size: 18px; font-weight: 600; color: var(--r-muted); }
+.rp .top .t { font-weight: 600; }
+.rp .top .why { color: var(--r-muted); font-size: 13px; margin-top: 2px; }
+.rp .top .ids { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* bars */
+.rp .bars { display: grid; gap: 4px; }
+.rp .br { display: grid; grid-template-columns: var(--lw, 150px) 1fr 54px; align-items: center; gap: 8px; font-size: 12px; padding: 1px 0; border-radius: 4px; }
+.rp .br:hover { background: var(--r-soft); }
+.rp .br .lb { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
+.rp .br .tr { position: relative; height: 12px; }
+.rp .br .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--s1); }
+.rp .br .vl { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--r-muted); }
+.rp .br .ref { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--r-muted); opacity: .6; }
+.rp .br .na { color: var(--r-faint); font-size: 11px; position: absolute; left: 0; top: -2px; }
+.rp .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--r-muted); margin: 6px 0 10px; }
+.rp .legend .sw { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 1px; }
+
+/* stacked bundle */
+.rp .stk { display: flex; height: 30px; gap: 2px; }
+.rp .stk span { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; white-space: nowrap; overflow: hidden; cursor: default; }
+.rp .stk span:first-child { border-radius: 4px 0 0 4px; }
+.rp .stk span:last-child { border-radius: 0 4px 4px 0; }
+.rp .stkrow { display: grid; grid-template-columns: 112px 1fr; gap: 10px; align-items: center; margin: 8px 0; font-size: 12px; }
+
+/* contrast */
+.rp .ct { background: oklch(0.172 0 0); border-radius: var(--r-radius); padding: 16px; display: grid; gap: 8px; }
+.rp .ctr { display: grid; grid-template-columns: 112px 1fr 120px; gap: 10px; align-items: center; }
+.rp .ctr .sample { font-size: 13px; }
+.rp .ctr .tk { font-family: var(--mono); font-size: 11px; color: oklch(0.845 0 0); }
+.rp .ctr .rt { height: 10px; position: relative; }
+.rp .ctr .rt .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 3px 3px 0; background: oklch(0.683 0 0); }
+.rp .ctr .rt .th { position: absolute; top: -5px; bottom: -5px; width: 1px; background: oklch(0.97 0 0); }
+.rp .ctr .rv { font-family: var(--mono); font-size: 12px; color: oklch(0.97 0 0); text-align: right; white-space: nowrap; }
+
+/* state matrix */
+.rp table.sm { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rp table.sm th, .rp table.sm td { border-bottom: 1px solid var(--r-border); padding: 7px 6px; text-align: left; vertical-align: top; }
+.rp table.sm th { font-weight: 500; color: var(--r-muted); font-size: 12px; }
+.rp .st { white-space: nowrap; font-size: 12px; }
+.rp .st b { font-family: var(--mono); display: inline-block; width: 16px; }
+.rp .st.ok b { color: #0ca30c; } .rp .st.part b { color: #c98500; } .rp .st.no b { color: var(--sev-critical); }
+.rp .scroll { overflow-x: auto; }
+
+/* diagram */
+.rp svg text { font-family: var(--font-sans, system-ui, sans-serif); }
+.rp svg .bx { fill: var(--r-card); stroke: var(--r-border); }
+.rp svg .bx-dead { fill: none; stroke: var(--r-faint); stroke-dasharray: 4 3; }
+.rp svg .lbl { fill: var(--r-fg); font-size: 12px; }
+.rp svg .lbl-m { fill: var(--r-muted); font-size: 11px; }
+.rp svg .lbl-d { fill: var(--r-faint); font-size: 11px; }
+.rp svg .ln { stroke: var(--r-muted); stroke-width: 1.5; fill: none; }
+.rp svg .ln-w { stroke: var(--sev-critical); stroke-width: 2; fill: none; }
+.rp svg .t-w { fill: var(--sev-critical); font-size: 11px; }
+
+/* finding list */
+.rp .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+.rp .filters select, .rp .filters input { font: inherit; font-size: 13px; color: var(--r-fg); background: var(--r-card); border: 1px solid var(--r-border); border-radius: 7px; padding: 5px 8px; }
+.rp .filters input { flex: 1; min-width: 160px; }
+.rp .sevtg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.rp .sevtg button { font: inherit; font-size: 12px; color: var(--r-fg); background: var(--r-card); border: 1px solid var(--r-border); border-radius: 999px; padding: 3px 10px; cursor: pointer; display: inline-flex; align-items: center; }
+.rp .sevtg button[aria-pressed="false"] { opacity: .45; }
+.rp .flist { border-top: 1px solid var(--r-border); }
+.rp .frow { border-bottom: 1px solid var(--r-border); padding: 9px 4px; cursor: pointer; }
+.rp .frow:hover { background: var(--r-soft); }
+.rp .frow .l1 { display: flex; gap: 8px; align-items: baseline; }
+.rp .frow .id { font-family: var(--mono); font-size: 12px; color: var(--r-muted); width: 34px; flex: none; }
+.rp .frow .ti { flex: 1; }
+.rp .frow .l2 { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 0 42px; }
+.rp .frow .det { display: none; margin: 8px 0 4px 42px; font-size: 13px; }
+.rp .frow.open .det { display: block; }
+.rp .frow .det dt { color: var(--r-muted); font-size: 12px; margin-top: 6px; }
+.rp .frow .det dd { margin: 1px 0 0; }
+.rp .count { font-size: 12px; color: var(--r-muted); }
+.rp .clear { font: inherit; font-size: 12px; background: none; border: none; color: var(--r-accent); cursor: pointer; padding: 0; }
+
+/* roadmap */
+.rp .rm { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.rp .rm .box h3 { margin-top: 0; }
+.rp .rm .ids { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+/* tooltip */
+.rp-tip { position: fixed; z-index: 50; pointer-events: none; max-width: 300px; background: var(--popover, #fff); color: var(--popover-foreground, #0b0b0b); border: 1px solid var(--border, rgba(11,11,11,.12)); border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.45; box-shadow: 0 6px 20px rgba(0,0,0,.18); display: none; font-family: var(--font-sans, system-ui, sans-serif); }
+.rp-tip b { display: block; font-size: 13px; }
+.rp-tip .m { color: var(--muted-foreground, #52514e); }
+
+@media (max-width: 560px) {
+  .rp .br { grid-template-columns: var(--lw-m, 110px) 1fr 46px; }
+  .rp .ctr { grid-template-columns: 92px 1fr 78px; }
+  .rp .pm { grid-template-columns: 54px 1fr 1fr; }
+  .rp .stkrow { grid-template-columns: 1fr; gap: 4px; }
+  .rp .frow .l2, .rp .frow .det { margin-left: 0; }
+}
+@media (prefers-reduced-motion: no-preference) { .rp .fill { transition: width .3s; } }
+</style>
+</head>
+<body>
+<div class="rp" id="rp">
+
+<div class="eyebrow">代码审核 · commit 9d28087 · 2026-11-24</div>
+<h1>cliproxy-dashboard 深度审核报告</h1>
+<div class="callout" style="border-left-color:var(--r-accent)">
+<b>阅读前先看：</b>本报告撰写时，<code>main</code> 位于 <code>9d28087</code>，是只读试用版（现保存在 <code>archive/read-only-trial</code> 分支）。之后 <code>main</code> 已重置为上游的 <code>35bc306</code>。对当前的 <code>main</code> 来说：
+<ul class="tight">
+<li>标为“仅试用版”的 <span id="ntrial"></span> 条已不再适用，除非以后重新做试用版。在清单的“适用范围”筛选里选“仅完整版”或“两者”即可排除它们。</li>
+<li>其余条目在上游代码中同样存在。文中的 file:line 引用基于 <code>9d28087</code>：除 <code>server/src/index.ts</code>、<code>src/main.tsx</code>、<code>src/pages/UsagePage.tsx</code>、<code>server/src/collector/cliproxy.ts</code> 这 4 个文件外，其他文件与上游逐行一致。</li>
+<li>上游锁定的 Hono 4.13.9 有一条中危公告 GHSA-4h7h-rv7c-7m2v（<code>validator('form')</code>）。本项目没有使用 validator，因此不受影响，但值得顺手升级。</li>
+</ul>
+后续修复时，请在分支名、提交信息和 PR 里引用问题编号（例如 S1、U1），方便对照本报告。
+</div>
+<p class="lead">范围：前端（React 页面、组件、样式）、后端（Hono 服务、采集器、SQLite、历史检索、共享池）、工程（构建、测试、CI、Docker、部署）。方法：三个审核分别通读代码；我又亲手复核了其中最严重的几条，并实际跑了 lint、类型检查、构建、测试和覆盖率。下面所有数字都来自这次运行。</p>
+
+<div class="grid tiles" id="kpis"></div>
+
+<h2>一句话结论</h2>
+<p>产品思路扎实，几个核心模块（配置编辑器的 diff 与并发控制、额度错误处理、金额用整数微美元存储）做得很用心。问题集中在三处：</p>
+<ul class="tight">
+  <li><b>“边角状态”几乎没设计。</b>加载中、出错、重复点击、离开前未保存，这几种情况在大多数页面都没处理。你从界面上感觉到的“不成熟”，大部分来自这里，而不是视觉风格。</li>
+  <li><b>完整版的安全模型只靠“绑定 127.0.0.1”。</b>它挡不住 DNS 重绑定，而管理桥连账号的 OAuth 凭据文件都允许下载。</li>
+  <li><b>你这个 fork 的“只读试用版”是靠改写入口实现的。</b>这导致约 7k 行死代码、文档和部署配置全部失配，而且它其实并不只读：它仍在消费代理那条只能有一个消费者的用量队列。</li>
+</ul>
+
+<h2>先搞清楚：你现在跑的是哪个版本</h2>
+<p class="muted">最近一次提交 <code>2dad63b</code> 把 <code>server/src/index.ts</code> 和 <code>src/main.tsx</code> 改成了试用版：Basic Auth、只允许 GET、只渲染用量页。原来的 5 个页面、管理桥、共享池等代码都还在仓库里，只是没挂载。</p>
+<div class="box" style="padding:10px">
+<svg viewBox="0 0 700 336" width="100%" role="img" aria-label="试用版运行结构：浏览器经 Basic Auth 和只读中间件访问 6 个用量 API 与静态页面；后台的采集器仍通过 LPOP 消费 CLIProxyAPI 的用量队列；管理桥、共享池、连接、LAN、历史检索、Muse 中继均未挂载。">
+  <rect class="bx" x="8" y="130" width="92" height="56" rx="8"/>
+  <text class="lbl" x="54" y="155" text-anchor="middle">浏览器</text>
+  <text class="lbl-m" x="54" y="172" text-anchor="middle">仅 UsagePage</text>
+
+  <rect class="bx" x="130" y="18" width="380" height="306" rx="10" style="fill:none"/>
+  <text class="lbl-m" x="142" y="36">Bun 进程（试用版入口）</text>
+
+  <rect class="bx" x="142" y="48" width="150" height="80" rx="7"/>
+  <text class="lbl" x="152" y="68">中间件</text>
+  <text class="lbl-m" x="152" y="86">Basic Auth（用户 trial）</text>
+  <text class="lbl-m" x="152" y="102">非 GET/HEAD → 403</text>
+  <text class="lbl-m" x="152" y="118">/api 白名单 6 条</text>
+
+  <rect class="bx" x="142" y="140" width="150" height="62" rx="7"/>
+  <text class="lbl" x="152" y="160">已挂载</text>
+  <text class="lbl-m" x="152" y="177">6 个只读 /api 路由</text>
+  <text class="lbl-m" x="152" y="193">静态文件 dist/</text>
+
+  <rect class="bx" x="142" y="214" width="150" height="92" rx="7"/>
+  <text class="lbl" x="152" y="234">后台任务（仍在跑）</text>
+  <text class="t-w" x="152" y="252">采集器 SUBSCRIBE + LPOP</text>
+  <text class="lbl-m" x="152" y="270">Tailscale 设备同步（写库）</text>
+  <text class="lbl-m" x="152" y="288">价格表每日下载（写文件）</text>
+
+  <rect class="bx-dead" x="310" y="48" width="188" height="236" rx="7"/>
+  <text class="lbl-d" x="322" y="68">未挂载（死代码）</text>
+  <text class="lbl-d" x="322" y="92">/v0/management 管理桥</text>
+  <text class="lbl-d" x="322" y="112">/api/pool、/pool 共享池</text>
+  <text class="lbl-d" x="322" y="132">/connect 连接机器</text>
+  <text class="lbl-d" x="322" y="152">LAN 监听</text>
+  <text class="lbl-d" x="322" y="172">/history 推送与检索</text>
+  <text class="lbl-d" x="322" y="192">Muse 中继 /v1</text>
+  <text class="lbl-d" x="322" y="212">额度、账号、Key、配置、</text>
+  <text class="lbl-d" x="322" y="228">共享 5 个页面</text>
+  <text class="lbl-d" x="322" y="256">前端 30/37 个源文件</text>
+  <text class="lbl-d" x="322" y="272">服务端约 2.9k 行</text>
+
+  <rect class="bx" x="560" y="110" width="132" height="96" rx="8"/>
+  <text class="lbl" x="626" y="134" text-anchor="middle">CLIProxyAPI</text>
+  <text class="lbl-m" x="626" y="154" text-anchor="middle">RESP :8317</text>
+  <text class="lbl-m" x="626" y="171" text-anchor="middle">用量队列</text>
+  <text class="lbl-m" x="626" y="188" text-anchor="middle">单一消费者</text>
+
+  <path class="ln" d="M100 158 H142"/>
+  <path class="ln-w" d="M292 298 H540 V180 H560"/>
+  <text class="t-w" x="404" y="312" text-anchor="middle">LPOP：与另一实例抢同一条队列</text>
+  <rect class="bx" x="560" y="230" width="132" height="58" rx="8" style="stroke-dasharray:4 3"/>
+  <text class="lbl-m" x="626" y="254" text-anchor="middle">另一个看板实例？</text>
+  <text class="lbl-m" x="626" y="271" text-anchor="middle">（“parallel trial”）</text>
+  <path class="ln" d="M626 230 V206" style="stroke-dasharray:3 3"/>
+</svg>
+</div>
+<div class="callout"><b>对你最直接的风险：</b><code>index.ts</code> 的注释写的是“Read-only parallel trial”。如果它和另一个看板实例同时连着同一个代理，两边会抢同一条用量队列（<code>LPOP</code>），每条记录只会进其中一个库，两边的统计都会缺数据。见 <a href="#f-D3">D3</a>。</div>
+
+<h2>问题分布</h2>
+<p class="muted">共 <span id="ntotal"></span> 条，按领域和严重度统计。点格子可以直接筛选下面的完整清单。“适用”一栏区分：只影响试用版、只影响完整版（上游原本的功能）、两者都受影响。</p>
+<div class="box scroll"><table class="hm" id="hm"></table></div>
+
+<h3>影响 × 工作量：从左上角开始做</h3>
+<p class="muted small">纵轴是我对实际影响的打分（5 最高），横轴是修复工作量。S 约半天以内，M 约 1–3 天。没有 L 级的项目：这些问题都不需要推倒重来。悬停或聚焦编号可看标题，点击跳到详情。</p>
+<div class="box"><div class="pm" id="pm"></div></div>
+
+<h2>最该先处理的 10 件事</h2>
+<div class="top" id="top10"></div>
+
+<h2>专题</h2>
+
+<h3>1. 界面状态覆盖：你感觉“不成熟”的主要来源</h3>
+<p class="muted">每个页面在 5 种非理想状态下的表现。✓ 处理得当，◐ 部分处理，✗ 没处理或处理错误。</p>
+<div class="box scroll"><table class="sm" id="sm"></table></div>
+<p class="small muted">修法是同一套：一个共享的 <code>useAsync</code> / <code>usePoll</code> 钩子统一管理加载、错误、重试和请求顺序，加上 <code>ConfirmDialog</code> 的 <code>busy</code> 属性和一个常驻的错误提示组件。做一次，6 个页面一起受益。</p>
+
+<h3>2. 文字对比度</h3>
+<p class="muted">下面的示例文字就是项目里的真实颜色，画在真实的卡片底色 <code>oklch(0.172 0 0)</code> 上。竖线是 WCAG AA 正文门槛 4.5:1。<code>--fg-3</code> 用在 11–12px 的眉标、图表刻度、空状态和表格占比列上，而这些恰恰是最小号的字。</p>
+<div class="ct" id="ct"></div>
+<p class="small muted">对比度按 OKLCH 无彩色的亮度精确换算。把 <code>--fg-3</code> 调到 L 0.62 就能到 5.2:1，层级感基本不变。</p>
+
+<h3>3. 轮询负载：没人看的时候也在请求</h3>
+<p class="muted">全应用有 9 个 <code>setInterval</code>，没有一个在标签页隐藏时暂停，回到前台时也不会立刻刷新。下面是每个轮询每小时发出的请求数（按 4 个账号估算）。</p>
+<div class="box"><div class="bars" id="polls" style="--lw:190px;--lw-m:120px"></div>
+<p class="small muted" style="margin-top:10px">只开着额度页时，前四条加上账号时段、共享概览同时运行，合计约 <b>430 次/小时</b>，一天一万次左右。其中额度请求会打到 Anthropic / OpenAI 的上游接口，而代码注释自己也提到它们限流很严（<code>src/lib/quota.ts:92</code>）。登录状态轮询每 2 秒一次（1800 次/小时），只在登录流程打开时运行，没画进图里。</p></div>
+
+<h3>4. 前端包体积</h3>
+<p class="muted">单位 KiB（未压缩）。完整版只有一个 chunk，Vite 会提示“超过 500 kB”。CodeMirror、Lezer 和 yaml 加起来占一半以上，但只有配置页用得到。</p>
+<div class="box">
+<div class="legend" id="bundleLegend"></div>
+<div id="bundle"></div>
+<p class="small muted" style="margin-top:8px">gzip 后：完整版 283 kB，试用版 79 kB。<code>@huggingface/transformers</code> 等服务端依赖没有进前端包，这一点没问题；但它们和前端依赖一起进了生产镜像（onnxruntime-node 单独就有 288 MB）。</p>
+</div>
+
+<h3>5. 测试覆盖：测得最多的不是最关键的</h3>
+<p class="muted">128 个测试全部通过，14 个文件，总行覆盖率 61%。但覆盖集中在共享池这个新功能上（sharing 相关 51 个测试）。决定用量数据会不会丢的采集链路，测试根本没有加载它。竖线是 60%。</p>
+<div class="legend"><span><span class="sw" style="background:var(--s1)"></span>行覆盖率</span><span><span class="sw" style="background:var(--s2)"></span>核心数据链路 / 安全边界</span><span>“未加载”= 没有任何测试导入该文件</span></div>
+<div class="grid two">
+  <div class="box"><div class="eyebrow" style="margin-bottom:8px">服务端</div><div class="bars" id="covS" style="--lw:150px;--lw-m:120px"></div></div>
+  <div class="box"><div class="eyebrow" style="margin-bottom:8px">前端</div><div class="bars" id="covF" style="--lw:150px;--lw-m:120px"></div></div>
+</div>
+
+<h3>6. 成熟度信号：从代码量和提交历史看</h3>
+<div class="grid two">
+  <div class="box">
+    <div class="eyebrow" style="margin-bottom:8px">代码量（行）</div>
+    <div class="bars" id="loc" style="--lw:120px;--lw-m:100px"></div>
+    <p class="small muted" style="margin-top:8px">测试与源码之比约 1:6.3。CSS 2.5k 行分在 5 个文件里，只有颜色做成了 token：间距和字号全是字面量，一共出现了 12 种字号。</p>
+  </div>
+  <div class="box">
+    <div class="eyebrow" style="margin-bottom:8px">改动最频繁的文件（提交次数）</div>
+    <div class="bars" id="churn" style="--lw:150px;--lw-m:120px"></div>
+    <p class="small muted" style="margin-top:8px">134 个提交，三个月内完成。规范前缀的提交里 fix 33 个、feat 16 个、refactor 只有 1 个。最常改的是样式和额度卡片，说明 UI 是边做边调出来的。这只是推测，但和界面状态缺失的情况对得上：功能先上，打磨一直在后面追。</p>
+  </div>
+</div>
+
+<h2 id="list">完整问题清单</h2>
+<p class="muted small">点一行展开位置、影响和建议。“已复核”表示我亲自读代码或运行确认过；“推断”表示根据代码推出、但没有在运行时复现。</p>
+<div class="filters">
+  <span class="sevtg" id="sevtg"></span>
+  <select id="fArea" aria-label="领域"></select>
+  <select id="fScope" aria-label="适用范围">
+    <option value="">全部适用范围</option>
+    <option value="trial">仅试用版</option>
+    <option value="full">仅完整版</option>
+    <option value="both">两者</option>
+  </select>
+  <input id="fq" type="search" placeholder="搜索标题、文件…" aria-label="搜索">
+</div>
+<div class="count"><span id="fcount"></span> <button class="clear" id="fclear">清除筛选</button></div>
+<div class="flist" id="flist"></div>
+
+<h2>建议路线</h2>
+<div class="grid rm" id="roadmap"></div>
+
+<h2>做得好的地方</h2>
+<div class="grid two">
+<div class="box"><ul class="tight">
+  <li>配置编辑器：表单 / YAML 双视图，保存前看 diff，用 <code>If-Match</code> sha256 做乐观并发，每次写入前备份（权限 600，保留 50 份），并且锁住了 server/port 字段，防止把自己锁在门外。</li>
+  <li>额度错误处理：<code>errors.ts</code> 把失败翻译成标题加提示，遵守 Retry-After 和 429 退避，旧读数保留并标为“过期”，用 localStorage 缓存让首屏秒开。</li>
+  <li>危险操作统一用原生 <code>&lt;dialog&gt;</code> 确认，自带焦点陷阱和 Esc。删除最后一个 key 会被拦下。</li>
+  <li>自定义控件的 ARIA 做得不错：switch、aria-pressed、quota 条用 <code>role="meter"</code>、导航用 <code>aria-current</code>。</li>
+</ul></div>
+<div class="box"><ul class="tight">
+  <li>金额用整数微美元存储，未知价格存 NULL；插入幂等（稳定 id + onConflictDoNothing）；重新计价和导入都在事务里。</li>
+  <li>管理写操作的白名单很严：精确匹配 key 集合，屏蔽“全部删除”的变体；配置写入串行化。</li>
+  <li>共享池 token 有 192 位熵、只存哈希；历史推送的路径校验到位；YAML 别名展开有深度和大小上限。</li>
+  <li>依赖克制：没有 UI 库和图表库，SVG 图表手写；前后端 TypeScript 都没有一个 <code>any</code>；所有定时器和监听器都正确清理。</li>
+</ul></div>
+</div>
+
+<h2>方法与局限</h2>
+<ul class="tight small muted">
+  <li>实际运行：<code>npm run lint</code>（0 错误，7 个警告）、<code>npm run server:check</code>（通过）、<code>npm run build</code>（通过）、<code>bun test --coverage</code>（128/128 通过，用的是本机 Bun 1.4.5，不是 CI 的 1.4.2）。没有安装 Docker，所以镜像体积没有实测。</li>
+  <li>完整版的包体积是在临时目录里构建 <code>2dad63b^</code> 测出来的，没有碰你的工作区。</li>
+  <li>审核过程中的副作用：第一次跑 <code>bun test</code> 时，测试往仓库根目录写了 50 份配置快照到 <code>.backups/</code>（也就是 T2）。审核前这个目录不存在，所以没有覆盖任何真实备份。这些文件已经删掉。<code>npm run build</code> 刷新了 <code>dist/</code>（git 忽略的目录）。git 工作区仍然干净。</li>
+  <li>标为“推断”的条目，例如进程崩溃（D1）、CSRF 能否真的触发代理端操作（S3）、镜像体积（E7），需要在运行时验证后再定优先级。</li>
+  <li>没有覆盖：真实浏览器里的视觉和交互走查、负载测试、对 CLIProxyAPI 本身的审查。</li>
+</ul>
+
+</div>
+<div class="rp-tip" id="tip" role="tooltip"></div>
+
+<script>
+(() => {
+const SEV = { critical: '严重', high: '高', medium: '中', low: '低' };
+const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
+const AREA = { security: '安全', data: '数据与后端', ux: '交互体验', a11y: '无障碍', perf: '性能', arch: '架构', eng: '工程与部署', test: '测试' };
+const SCOPE = { trial: '仅试用版', full: '仅完整版', both: '两者' };
+const EFFORT = { S: 'S（≤半天）', M: 'M（1–3 天）' };
+
+// [id, sev, area, scope, effort, impact(1-5), title, where, impact text, fix, status]
+const F = [
+['S1','critical','security','full','S',5,'管理桥没有 Host 校验，可被 DNS 重绑定攻击','server/src/http/sharing.ts:123（trustedHost 只用在 /api/pool）；管理桥、/api、/connect、/history 都没有','恶意网页把自己的域名重绑定到 127.0.0.1 后就算同源，可以读 config.yaml 和 API key，先取 ETag 再 PUT 改配置。README 里“只绑定 127.0.0.1”这条防线不成立。','把 trustedHost 提为全局中间件，只接受已知的 Host。','已复核'],
+['S2','high','security','full','S',5,'GET 透传允许下载账号的 OAuth 凭据文件','server/src/http/management.ts:22 BLOCKED_GETS 只拦 /usage-queue 和 *-auth-url；/auth-files/download 直接转发','能访问管理桥的人（或借 S1 的网页）可以下载每个账号的 access / refresh token。这比白名单拦住的大部分写操作都危险。前端从不调用这个接口，只有服务端 meta-quota.ts 用。','把 /auth-files/download 加入黑名单；更好的做法是 GET 也改成白名单。','已复核'],
+['S3','high','security','full','S',4,'text/plain 跨站 POST（CSRF）','server/src/http/app.ts:38 POST /api/import 不检查 Content-Type；管理桥白名单内的 POST（/api-call 消费重置额度、/routing/cooldown/reset）同样','任何网站都能往库里注入伪造的用量记录；可能还能代你消耗 Codex 重置额度，取决于代理是否接受 text/plain 请求体。','全局要求 application/json，并配合 S1 的 Host 校验。','推断（代理端行为）'],
+['S14','high','security','both','S',4,'compose 默认镜像指向上游的“无登录”完整版','deploy/compose.yaml:28,40 默认 ghcr.io/jarenkempton/...:main；.github/workflows/image.yml:23 推送到上游命名空间','忘了设 IMAGE 时，会把上游没有任何登录的完整管理界面发布到 tailnet。fork 的 image.yml 也推不到别人的命名空间，fork 上至今没有成功的运行。','image.yml 改用 ghcr.io/${{ github.repository }}；compose 改成 ${IMAGE:?} 强制必填。','已复核'],
+['S4','medium','security','full','M',3,'LAN 监听：明文 HTTP、限流是全局的、信任 X-Forwarded-For','server/src/http/lan.ts:39,55；http/connect.ts；http/history.ts:29；http/muse-relay.ts:71,77','同一局域网的人能嗅探到明文下发的代理 key；每分钟十几次错误请求就能把所有人锁在推送、导入和领取之外；还能伪造 IP 冒充别的机器记用量。','按 IP 限流，剥掉客户端传来的 XFF，并醒目提示或优先使用 TLS。',''],
+['S5','medium','security','full','S',3,'历史推送没有大小和磁盘配额','server/src/http/history.ts:48；server/src/history/store.ts:43（内存解码 base64，同步 appendFileSync）','任何持有 key 的人（或 key 泄露后）都能写满磁盘并卡住事件循环。','设置单次和单机的字节上限，改成异步写。',''],
+['S6','medium','security','full','S',3,'借入共享池时，出借方能写入任意模型路由','server/src/borrowed-upstreams.ts:93 原样写入对方返回的模型列表；server/src/pool-invites.ts:31 接受 http:// 网关','恶意出借方可以为任意模型名注册兜底路由，把你的请求吸过去；池 token 也可能明文传输。','只接受 grok/meta 的模型 id；除 tailnet 外强制 https。','推断（路由效果）'],
+['S7','medium','security','full','S',2,'生成的 shell / Python 脚本嵌入了未转义的 origin','server/src/http/connect.ts:78 取 x-forwarded-host / host；src/lib/connect.ts:142,146,253,268','目前只能注入请求者自己的脚本；一旦前面的代理或缓存透传客户端的 XFH，就成了真正的脚本注入。','用已知主机列表校验 origin，并做 shell 转义。',''],
+['S8','medium','security','both','S',3,'敏感数据落盘：明文 key、默认文件权限、备份目录随工作目录漂移','server/src/db/schema.ts:126 pool_peers.proxy_key；server/src/db/client.ts（默认 umask）；server/src/http/management.ts:18 BACKUP_DIR=".backups"','复制一份 usage.db 就泄露了可用的代理 key；进程从哪里启动，备份就写到哪里（T2 就是这么来的）。','数据库文件 chmod 600；BACKUP_DIR 改成绝对路径并可配置。',''],
+['S9','medium','security','full','S',3,'历史脱敏漏掉了不少常见令牌格式','server/src/history/redact.ts:4-13','AIza…（Google）、glpat-、npm_、hf_、sk_live_、tskey-、URL 里的 user:pass、Basic 认证、Cookie 头会被索引、做嵌入，并出现在搜索结果里。','补上这些规则，并加测试。',''],
+['S10','medium','security','both','S',3,'管理 key 出错时没有全局熔断，会反复触发代理的 IP 封禁','server/src/collector/cliproxy.ts:51,70 无限重试 AUTH；熔断只在 management.ts:190 的管理桥里','key 配错后，采集器每 30 秒失败一次 AUTH，代理会一次次封禁 127.0.0.1 约 30 分钟，连带管理桥一起不可用。','所有用到管理 key 的模块共用一个健康开关；遇到认证错误时停止重试。',''],
+['S11','low','security','trial','S',2,'试用版 Basic Auth：用户名固定，不要求密码强度，失败不限流','server/src/index.ts:13,26','TRIAL_PASSWORD 设得弱的话，可以隔着 TLS 前端在线爆破。比较本身是常量时间的（Hono 先做 SHA-256 再比较）。','要求至少 20 个字符；按 IP 限制 401 次数。','已复核'],
+['S12','low','security','trial','S',1,'试用版的路径黑名单和真实路由对不上','server/src/index.ts:31-32 正则里的 /sharing 不存在，真实前缀是 /pool、/api/pool、/muse-code','现在没出事，是因为这些路由本来就没挂载，真正起作用的是方法限制。以后有人挂载更多路由时，这行代码会给人错误的安全感。','删掉这个正则或改成真实前缀，并加测试（T1）。','已复核'],
+['S13','low','security','both','S',2,'部署 webhook 可以在 5 分钟内重放，任务查询接口没有鉴权','deploy/hook.ts:17,30-31,102,115-117','截获的请求可以在 5 分钟窗口内重放；JSON 解析失败直接 500；任务状态接口会泄露 TrueNAS 的错误信息。HMAC 校验本身是对的。','缓存已用过的签名 300 秒；校验请求体；任务查询也要鉴权。',''],
+
+['D1','high','data','both','M',5,'采集写库没有异常处理：一条坏数据可能拖垮进程并丢掉记录','server/src/collector/cliproxy.ts:93-112 store() 无 try/catch；cliproxy-record.ts:60 不校验时间戳；resp.ts:109 解析器在 data 回调里抛错','非法时间戳、SQLITE_BUSY 或一个坏的 RESP 字节都会变成未捕获异常。补漏时如果中途抛错，这一批（最多 500 条）已经 LPOP 出来的其余记录就丢了，代理那边也不会再有。','store() 包上 try/catch；校验时间戳；每批 LPOP 在一个事务里插入；解析出错时重连。','已复核（崩溃为推断）'],
+['D2','high','data','both','S',4,'usage.db 没有设置 busy_timeout','server/src/db/client.ts:14-15 只设了 WAL 和外键（history.db 设了 5000ms）','导入脚本或第二个实例同时写库时，采集器的写入会立刻失败（SQLITE_BUSY），然后撞上 D1。','PRAGMA busy_timeout=5000; synchronous=NORMAL。','已复核'],
+['D3','high','data','trial','S',4,'“只读”试用版仍在消费代理的单消费者用量队列','server/src/index.ts:21-24 启动了采集器；collector/cliproxy.ts:82 用 LPOP 补漏','如果试用版和另一个看板实例并行，每次重连补漏都会从对方手里抢走排队中的记录，两个库会越差越多。README 明确说只能有一个消费者。','加一个“不采集”模式，只读数据库；或者明确只让一个实例运行采集。','已复核'],
+['D4','medium','data','both','M',3,'用量明细没有保留策略，索引和查询对不上','server/src/db/schema.ts:59 requests_model 索引没被任何查询用到；source 列没有索引；每行都存完整 user_agent','数据库和每次全表扫描都会无限增长。','加小时级汇总表或保留任务；删掉无用索引；加 (source, occurred_at)。',''],
+['D5','medium','data','full','S',3,'一条伪造的远古时间戳可以让“全部”范围卡死事件循环','server/src/import/importer.ts:44 接受任意早于截止点的时间；server/src/usage/summary.ts:92 每天一次 unshift','导入一条公元 1000 年的记录，打开“全部”就要循环约 37.5 万天，而且 unshift 是 O(n²)，整个服务（包括采集器）都会卡住。','把时间戳限制在合理范围内；日期键改用 push 再 reverse。','已复核（卡顿时长为推断）'],
+['D6','low','data','both','S',2,'半小时时区下按天分桶会错位','server/src/usage/summary.ts:131 按 UTC 整点取桶，:101 再映射到日期','在印度、尼泊尔、澳洲中部时区，每天有 30–45 分钟的数据算进错误的日期，窗口起点也会漏掉前 30 分钟。','按 15 分钟取桶，或者在 SQL 里计算本地日期。',''],
+['D7','low','data','both','S',3,'RESP 连接没有心跳，半开连接时采集会悄悄停止','server/src/collector/resp.ts（无 keepalive / PING；每个 chunk 都 Buffer.concat）','网络断了但 socket 没关时，/api/health 仍然显示 connected: true，但已经不再收记录，超过保留时间后数据永久丢失。','setKeepAlive，定时 PING，health 里加“多久没收到记录”。',''],
+['D8','low','data','both','S',2,'计价细节：长上下文阶梯价没算，覆盖价表没有写入方','server/src/usage/pricing.ts:75,82,118','*_above_200k_tokens 价格被忽略，长上下文成本偏低；覆盖价查找区分大小写；price_overrides 表没有任何写入代码。','支持阶梯价；规范化覆盖价的键；补上写入入口或删掉这张表。',''],
+['D9','low','data','both','S',2,'Tailscale 状态读取失败时清空所有设备名','server/src/tailnet.ts:57,75','一次 tailscale status 失败，机器名就全没了，直到下次同步成功；CLI 卡住时进程会越积越多（推断）。','读取失败就跳过写入；spawn 加超时。',''],
+['D10','low','data','both','S',2,'环境变量没有校验','server/src/env.ts:18,26,30 直接 Number()','LAN_PORT 写错会悄悄关掉监听，端口写错会变成 NaN；CPA_TARGET 用 https 却不写端口时，采集器会去连 8317 而不是 443，而且 RESP 是明文 TCP。','用 schema 解析，出错就在启动时失败。',''],
+
+['U1','high','ux','full','S',5,'重置额度可以被双击消费两次','src/components/ResetCredits.tsx:34-46,86-87；src/components/ui.tsx:72 确认按钮请求中不禁用；每次点击生成新的 redeem_request_id','请求进行时按钮只改了文字（“Applying…”）。双击会花掉两个 Codex 重置额度，而对话框自己写着“不可撤销”。','给 ConfirmDialog 加 busy 属性，同时禁用两个按钮；每次打开对话框只生成一个请求 id。','已复核'],
+['U2','high','ux','full','S',4,'账号启用/停用失败时没有任何提示','src/lib/store.tsx:128-142 toggle 在 finally 后把错误抛出；QuotaCard.tsx:125、AccountsPage.tsx:184 都没 catch','开关在重新加载后悄悄弹回，没有提示，只多了一个未处理的 Promise 拒绝。用户分不清账号到底停了没有。','捕获错误并给出带原因的提示（ClearCooldown 已经这么做了）。','已复核'],
+['U3','high','ux','full','M',4,'和后端失联时不提示，页面继续显示旧数据','src/lib/store.tsx:72-76 只有 401 或被拦截才设 fatal；src/App.tsx:72 侧栏警告只看 fatal','服务器或代理挂了以后，额度页和账号页仍展示旧数据（或空数据），页脚照样显示代理版本，像是一切正常。','记录 lastError / lastOkAt，显示“数据停在 xx:xx”的横幅。',''],
+['U4','medium','ux','full','S',3,'保存配置、新建 key、生成连接命令都能重复提交','src/pages/ConfigPage.tsx:156-169,264；src/pages/KeysPage.tsx:64-74,93；src/components/ConnectMachine.tsx:65-87,131','双击保存配置，第二次因 If-Match 失败，用户在已经保存成功的情况下看到“未保存”（推断）；连接机器时可能创建重复的 key。','和 U1 用同一套 busy 机制。',''],
+['U5','medium','ux','both','S',3,'用量页快速切换范围时，慢的旧响应会覆盖新选择','src/pages/UsagePage.tsx:320-334 没有 AbortController，也没有请求序号（SharingPage.tsx:87-92 已经有 lenderLoad 计数器）','先点“全部”再点“24h”，如果“全部”返回更慢，按钮显示 24h，数据却是全部时段的。','AbortController 或请求序号。','已复核'],
+['U6','medium','ux','both','S',3,'用量页没有加载状态','src/pages/UsagePage.tsx:365-367 summary 为空时什么都不渲染；切换后图表标题用的还是旧 bucket','首屏标题下是一片空白；切换范围后旧数字照常显示，看起来像新数据。这是试用版唯一的页面。','首屏用骨架屏，刷新时降低旧图透明度并显示小转圈。','已复核'],
+['U7','medium','ux','full','S',3,'加载失败后页面卡住或空白，只有一个 3.5 秒的提示','src/pages/ConfigPage.tsx:123-132,192 永远停在 “Loading…”；src/pages/KeysPage.tsx:48-50,98 页面空白；src/pages/SharingPage.tsx:76','一次请求失败，整页就不能用了，没有页内错误信息，也没有重试按钮。','一个共享的页内错误块加“重试”按钮。',''],
+['U8','medium','ux','full','S',2,'数据还没到就显示“没有账号”','src/pages/AccountsPage.tsx:234-236 不看 loaded；src/pages/QuotaPage.tsx:62；src/components/Timeline.tsx:220','每次冷启动都会先闪一下 “No Claude accounts yet”“0 accounts on”。','用 loaded 判断，改为骨架屏。',''],
+['U9','medium','ux','full','S',3,'未保存的配置修改会被悄悄丢弃','src/pages/ConfigPage.tsx:126-128,187 “重新加载”直接覆盖草稿；没有 beforeunload，切换路由时页面卸载','点一下“重新加载”或侧栏上的其他页面，改了半天的配置就没了，不会提醒。','草稿有改动时先确认，并加 beforeunload。',''],
+['U10','medium','ux','full','M',3,'API key 列表整表覆盖写入，并发时会吞掉 key','src/pages/KeysPage.tsx:68,81；src/components/ConnectMachine.tsx:70 基于本地快照 PUT 整个列表，没有版本校验','两个标签页同时操作，或者连接机器和新建 key 同时发生时，可能悄悄删掉一个 key，等于吊销了那台机器。','服务端提供增删接口，或者像配置一样加 ETag。','推断'],
+['U11','medium','ux','trial','S',3,'试用版在手机上没有页面标题，导航、提示和 PWA 清单也都失效','src/styles/mobile.css 的 .page-head h1 {display:none}；src/main.tsx:15-17 不再渲染顶栏；Toaster 未挂载；public/manifest.webmanifest start_url 仍是 /#/quota','屏宽 ≤760px 时整个页面没有标题，屏幕阅读器也读不到 h1。以后调用 toast() 不会有任何反应。添加到主屏后打开的是不存在的页面。','把规则限定到 .shell .page-head h1，或者给试用版一个最小的页头；见 R1。','已复核'],
+['U12','low','ux','full','S',2,'错误提示还在用开发环境的说法','src/lib/errors.ts:36,38 “Blocked by the dev bridge”“dev server”','生产环境的用户会收到错误的排查建议。','改成“看板服务器”。',''],
+['U13','low','ux','full','S',2,'提示条一次一条、3.5 秒消失，成功和错误同一个样式','src/components/ui.tsx:80-100','大部分失败只通过它告知，错误信息还没读完就消失了，也会互相覆盖。','错误类提示常驻直到关闭，支持堆叠；或改成页内显示（U7）。',''],
+['U14','low','ux','both','S',2,'Tokens 模式下，按天明细的 Total 列仍然是美元','src/pages/UsagePage.tsx:246-250','同一行里，邻近的列是 token 数，Total 却是美元。','Total 跟随指标切换。',''],
+['U15','low','ux','both','S',2,'同一事物多套名字，日期格式混用','src/lib/usage.ts:129-136（OpenAI / Anthropic / Meta）对 src/lib/quota.ts:289（Codex / Claude / Muse Code）；src/components/Timeline.tsx:14-15,132','用户得自己在脑子里换算“Codex = OpenAI”“Muse = Meta”。同一条时间线上同时出现 “10/25” 和 “Oct 19, 11:50 PM”。','一张共享的供应商标签表，一种日期样式，一种 locale。',''],
+
+['A1','medium','a11y','both','S',3,'次级文字对比度不足','src/styles/app.css:18 --fg-3 oklch(0.51)；src/styles/quota.css:348 周末表头 oklch(0.42)','卡片上 --fg-3 只有 3.3:1，周末表头 2.3:1，低于 AA 的 4.5:1，而它们恰好用在 11–12px 的小字上。','--fg-3 调到 L≈0.62（5.2:1），删掉 0.42 的特例。','已复核（已计算）'],
+['A2','medium','a11y','both','M',2,'图表只能用鼠标读取；元素 id 重复','src/components/UsageChart.tsx:172,215；src/components/PoolRow.tsx:200-202 每行都用 id="pool-dots"','键盘和屏幕阅读器用户读不到每个时间桶的数值（按天明细表算是部分补偿）。','方向键在桶间移动焦点，用 aria-live 播报；或提供“以表格查看”；id 唯一化。',''],
+['A3','medium','a11y','full','S',2,'多个表单控件没有可访问名称','src/pages/ConfigPage.tsx:90-110,213；src/pages/KeysPage.tsx:103,131,141；src/pages/SharingPage.tsx:268；src/components/ui.tsx:31','屏幕阅读器读出的是无名输入框，以及一排分不清是哪个 key 的“删除”“复制”。','用 label htmlFor 或 aria-label；Segmented 加 label 属性。',''],
+['A4','low','a11y','full','S',2,'移动端收起的侧栏仍能 Tab 进入；切换页面时焦点和标题都不变','src/styles/mobile.css:48-57 只用 translateX 移出屏幕；src/App.tsx:34-42','键盘用户会停在看不见的链接上；屏幕阅读器不知道页面已经换了。','收起时加 inert；打开时把焦点移到第一个链接；切页时更新 document.title 并聚焦 h1。',''],
+['A5','low','a11y','both','S',2,'触控目标太小','src/styles/app.css:340-349 开关 32×18，按钮 30px，分段按钮 24px','手机上容易点错；18px 的开关高度低于 WCAG 2.5.8 的 24px 下限。','在 ≤760px 时放大，或者用 padding 扩大点击区域。',''],
+
+['P1','medium','perf','full','S',3,'完整版没有代码分割，每个页面都要下载 CodeMirror','src/App.tsx:7-12 静态导入所有页面；构建结果 878 kB / 283 kB gzip 单 chunk','CodeMirror、Lezer 和 yaml 占一半以上，只有配置页用得到。手机首屏也要付这笔开销。','React.lazy 懒加载页面，至少懒加载 ConfigPage。','已复核（已测量）'],
+['P2','medium','perf','full','S',3,'9 个轮询在标签页隐藏时照常运行，回到前台也不立刻刷新','src/lib/store.tsx:109-111；src/pages/QuotaPage.tsx:26；src/pages/UsagePage.tsx:332；src/lib/lenders.ts:18；src/components/Timeline.tsx:40 等','后台标签页每小时约 430 次请求，并持续打上游额度接口；切回来时看到的是最多 5 分钟前的数据。','写一个 usePoll 钩子：隐藏时暂停，可见时立即刷新。','已复核'],
+['P3','medium','perf','full','S',3,'额度请求不去重','src/components/QuotaCard.tsx:168 刷新按钮加载中不禁用；src/lib/store.tsx:79-98 不检查是否已有请求在跑','连点刷新，或者赶上 5 分钟一次的批量刷新，会并发打上游，更容易被 429。','已有请求在跑就跳过，或者缓存进行中的 Promise。',''],
+['P4','medium','perf','both','M',3,'用量汇总在请求路径上同步做全表聚合，没有缓存','server/src/usage/summary.ts:125-187 每次 3 条查询，各带 5 个 LEFT JOIN 和按计算表达式 GROUP BY；server/src/machines.ts:27-39','bun:sqlite 是同步的，查询期间事件循环（包括采集器的 socket）被阻塞，耗时随行数增长；每个打开的用量页每 30 秒请求一次。','按 (range, tz) 缓存约 30 秒，或者改成小时汇总表（和 D4 一起做）。',''],
+['P5','medium','perf','both','S',2,'计价查找不缓存，重新计价反复扫描永远定不了价的行','server/src/usage/pricing.ts:128 每次未命中都过滤约 2.5k 条；server/src/usage/reprice.ts:10','启动和每次刷新价格表的开销是“未定价行数 × 价格表大小”，而且是同步的。','按模型缓存查找结果；给无法定价的行打标记。',''],
+['P6','medium','perf','full','S',2,'共享池网关每个借用请求要多次调用管理接口（N+1）','server/src/http/sharing.ts:103；server/src/sharing.ts:161-170','每个对端请求都额外多出几次到代理的往返。','模型到池的映射缓存约 60 秒。',''],
+['P7','low','perf','full','M',1,'一个大 context，每 30 秒的时钟 tick 重渲染所有卡片','src/lib/store.tsx:162-166；全项目 0 个 React.memo','现在账号不多还感觉不到，但会随账号数线性变差。','时钟单独放一个 context，或改用 useSyncExternalStore 选择器。',''],
+['P8','low','perf','trial','S',1,'字体和 CSS 加载了用不到的部分','src/main.tsx:7-11 引入全部 5 个样式表；21 个字体文件 280 KiB','浏览器只下载需要的子集，运行时影响不大，但 dist 和镜像都变大了。','只引入 latin 的 woff2；样式按页面拆分。',''],
+
+['R1','medium','arch','trial','M',4,'试用版靠改写入口文件实现，留下约 7k 行死代码和一堆失配','src/main.tsx；server/src/index.ts；前端 30/37 个源文件、服务端约 2.9k 行未被使用','这是 D3、E1、E2、U11、T1 的共同根源。128 个测试里有 100 个测的是试用版不运行的代码，给人虚假的安心感；以后从上游合并也会越来越难。','把试用版做成独立入口（server/src/trial.ts + Vite 的第二个 input，或 TRIAL_MODE 开关），恢复原来的 index.ts 和 main.tsx。','已复核'],
+['R2','medium','arch','full','S',3,'没有错误边界，一个异常响应就整页白屏','src 下没有任何 ErrorBoundary；src/lib/lenders.ts:24 new URL()；src/lib/usage.ts:63 未校验的 as T','任何一个渲染时抛错的字段都会让整个应用（包括试用版）变成空白的 #root。','顶层加一个错误边界，回退界面带“重新加载”按钮。',''],
+['R3','medium','arch','both','M',2,'服务端通过一个可变全局变量依赖前端模块','server/src/drain.ts:7-8；server/src/sharing.ts:6-9；server/src/http/connect.ts:16；src/lib/api.ts:23-24 sendManagementVia','隐藏的调用顺序依赖：如果没先接上管理桥，listAuthFiles 会去 fetch 一个相对路径然后失败。app.ts 甚至在导入时就会读取 .backups/quota-state.json。','共享代码移到 shared/；显式注入管理客户端。',''],
+['R4','low','arch','both','M',2,'同一件事重复实现了好几遍','前端 3 套 fetch 封装（api.ts / usage.ts / sharing.ts）；后端 4 份失败限流器（lan / history / connect / sharing）；newKey、KeyInfo、useWidth 各两份','页面用了哪个封装，错误处理就跟着不一样；修 S4 这样的问题要改 4 处。','统一成一个 http.ts 加类型化错误；抽出共享的限流器。',''],
+['R5','low','arch','both','S',1,'只有服务端用的脚本模板放在前端目录里','src/lib/connect.ts（289 行 shell/JXA）；src/lib/history-push.ts（145 行 Python）','客户端/服务端边界模糊，前端一旦误导入一个值，它们就会进包。','移到 server/ 或 shared/。',''],
+['R6','low','arch','both','M',2,'没有统一的错误处理和可观测性','server/src/http/app.ts 无 onError；16 处 console.*；server/src/proxy-keys.ts:19 把代理宕机当作“key 无效”','故障看起来像认证失败，很难排查；代理一宕，合法机器还会被计入锁定次数。','onError 统一返回 JSON；结构化日志；访问日志；采集器计数指标。',''],
+['R7','low','arch','both','M',2,'设计 token 只覆盖了颜色','src/styles/*.css：145 处 padding/margin/gap 字面量，0 个间距变量；12 种字号；只有暗色；没有 prefers-reduced-motion','页面之间的间距和字号会慢慢走样；没有浅色主题；动画无视“减少动态效果”设置。','加 --space-* / --text-* 刻度；图表颜色也移进 CSS 变量；加 reduced-motion 规则。',''],
+
+['E1','high','eng','trial','S',4,'必填的 TRIAL_PASSWORD 没写进任何文档，README 还说“没有登录”','server/src/index.ts:13-14；README.md 配置表；.env.example；deploy/compose.yaml:4-5','照着 README 或 compose 部署，容器会因为缺少这个变量而不断重启；安全章节描述的是一个已经不存在的产品。','在 README、.env.example 和 compose 头部写明变量和用户名 trial；按试用版重写安全和功能章节。','已复核'],
+['E2','medium','eng','trial','S',3,'只允许 loopback 的检查，破坏了 README 里的非 host 网络部署方式','server/src/index.ts:15；README.md:99 让人设 USAGE_SERVER_HOST=0.0.0.0','macOS/Windows 上的 Docker，或者 CPA_TARGET=http://localhost:8317，或者代理在其他机器上，启动时都会直接抛出 “loopback required”。','也接受 localhost 和 ::1，或者把这个检查做成可选；在文档里写明限制。','已复核'],
+['E3','high','eng','both','S',4,'CI 没通过也照样构建、推送并自动部署镜像','.github/workflows/image.yml 与 ci.yml 并行触发，没有 needs 或 workflow_run','lint 或测试失败的提交，也会被推成 :main 并通过 webhook 自动上线。','把镜像构建合进 ci.yml，并设置 needs: check。',''],
+['E4','medium','eng','both','S',2,'PR 不构建 Docker 镜像','.github/workflows/ci.yml:9-24','Dockerfile 的问题（包括 Quench 克隆、模型下载）要合并到 main 之后才会暴露。','PR 里用 push:false 构建一次，并开启 GHA 缓存。',''],
+['E5','medium','eng','both','S',3,'容器以 root 运行，没有健康检查；/api/health 永远返回 200','Dockerfile:26-36 没有 USER 和 HEALTHCHECK；server/src/http/app.ts:20-26','被攻破就是 host 网络里持有管理 key 的 root；采集器断开了，health 仍然是 200，用量会悄悄丢失。','USER bun；采集器断开超过 N 秒时 health 返回 503；提供一个免鉴权的 /healthz 并接到 HEALTHCHECK。',''],
+['E6','medium','eng','both','M',2,'镜像构建缓存差、依赖安装不可复现，Bun 版本三处不一致','Dockerfile:1-10（先 COPY . . 再安装和下载模型），:4,6 没有 --frozen-lockfile；Bun 版本：Dockerfile 1.4.0 / 1.4.2，CI 1.4.2，本机 1.4.5','改一行 README 都会重新安装依赖、重新下载 bge-small 模型；镜像里的依赖树可能和 CI 测的不一样；测试和生产跑在不同的运行时上。','单独的生产依赖阶段和模型阶段；提交 bun.lock 并使用 --frozen-lockfile；用一个 ARG BUN_VERSION 统一版本。','已复核'],
+['E7','medium','eng','both','M',2,'生产镜像带上了服务端 ML 依赖和全部前端依赖','package.json：@huggingface/transformers 带来 onnxruntime-node 288 MB；Dockerfile:7-9 删 CUDA 的 rm 什么都没匹配到','镜像大概 600 MB 以上（推断，没有实测），而试用版根本用不到索引器。','前端包移到 devDependencies；按 TARGETARCH 裁剪；索引器单独做一个镜像或 target。','推断（体积）'],
+['E8','medium','eng','both','M',2,'供应链卫生缺失','actions 按 tag 而非 SHA 固定；没有 SBOM、签名、漏洞扫描、Dependabot；npm audit（含 dev）有 6 个，其中 2 个高危（vite、source-map-js）','镜像无法追溯和验证；漏洞没人提醒；连续推送会让两次部署互相竞争。','metadata-action 打标签，加 provenance / sbom、cosign、漏洞扫描；固定 action SHA；concurrency: deploy；加 Dependabot。',''],
+['E9','medium','eng','both','S',2,'启动时阻塞等待一次没有超时的价格表下载','server/src/index.ts:18 await prices.start()；server/src/usage/pricing.ts:82','上游卡住（DNS 黑洞、强制门户）时，采集器和 HTTP 服务都起不来，这段时间的记录在代理队列里慢慢过期。','先用缓存的价格表启动，后台带超时刷新。',''],
+['E10','medium','eng','both','M',3,'SQLite 没有备份方案','server/src/db/client.ts（WAL 模式）；README 只说把 data/ 放在持久存储上','WAL 模式下直接复制文件可能得到不一致的库；用量历史是代理本身不保存的，丢了就找不回来。','定时 sqlite3 .backup 或 VACUUM INTO，并写进文档。',''],
+['E11','low','eng','both','S',2,'前端 TypeScript 没开 strict，前端测试从不做类型检查，lint 警告不阻断 CI','tsconfig.app.json（无 strict，但开了也是 0 错误）；tsconfig.app.json:26 排除了 *.test.ts；.oxlintrc.json；没有格式化工具','KeysPage.tsx:37 这种真正的隐患（load 在自己的初始化里被调用）只是一条警告。','开 strict；加 tsconfig.test.json；CI 用 --deny-warnings；加一个格式化检查。',''],
+['E12','low','eng','both','S',2,'文档缺失或过时','docs/*.png 截图停在 CLIProxyAPI v6.6.0；README.md:49 克隆的是上游地址；缺 CHANGELOG 和架构图；package.json:4 version 0.0.0；没有 git tag','新人照着文档走会走错；版本之间没法区分。','重拍截图；加“试用版 fork”章节；从 env.ts 生成环境变量表；用 tag 发版。',''],
+
+['T1','high','test','trial','S',4,'试用版唯一的安全边界没有测试，而且没法单独导入','server/src/index.ts:26-34 中间件写在有副作用的入口文件里','方法限制、/api 白名单、路径正则一旦被改坏，会无声无息地上线。','抽成导出的 trialGuard()，测 401、非 GET 返回 403、黑名单路径返回 404、HEAD。',''],
+['T2','medium','test','both','S',3,'跑测试会把配置快照写进仓库真实的 .backups/，并按“最多 50 份”轮换删除','server/src/http/management.ts:18-19,150-155','在部署目录里跑一次 bun test，就会把真实的配置备份（里面有密钥）挤掉。这次审核时实际发生过，只是当时目录是空的。','备份目录可配置，测试指向临时目录（和 S8 一起做）。','已复核（实际发生）'],
+['T3','medium','test','both','M',4,'决定数据会不会丢的链路没有测试','collector/cliproxy.ts、collector/resp.ts 没有被任何测试加载；usage/cliproxy-record.ts 行覆盖 6%；import/*、http/app.ts 也没有','D1、D7 这类问题只能在生产环境里发现，而且发现时数据已经丢了。','搭一个假的 RESP 服务器测试采集器；用 Hono 的 app.request() 测路由。','已复核'],
+['T4','medium','test','full','M',3,'前端没有组件、交互或端到端测试','只有 4 个前端测试文件（25 个测试），全是纯逻辑','U1、U2、U5 每一个都能被一个小小的组件测试抓到。','先测纯函数（usage.ts、format.ts、niceScale），再用 Testing Library 测对话框和开关的错误路径，再加一个 Playwright 冒烟测试。',''],
+['T5','low','test','both','S',1,'一个测试真的 sleep 12 秒，占整套测试耗时的 88%','server/src/http/muse-relay.test.ts:21','每次本地运行和 CI 都白等 12 秒。','空闲阈值改为可注入。',''],
+['T6','low','test','both','S',2,'CI 不检查 schema 和迁移是否一致，也没有迁移升级测试','.github/workflows/ci.yml','schema 漂移要到运行时才暴露。','CI 里加 drizzle-kit check。',''],
+].map(r => ({ id:r[0], sev:r[1], area:r[2], scope:r[3], effort:r[4], impact:r[5], title:r[6], where:r[7], why:r[8], fix:r[9], status:r[10] }));
+const byId = Object.fromEntries(F.map(f => [f.id, f]));
+const sevColor = s => `var(--sev-${s})`;
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') n.className = v; else if (k === 'style') n.style.cssText = v; else if (k === 'text') n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+};
+const sevBadge = s => el('span', { class: 'badge' }, el('span', { class: 'dot', style: `background:${sevColor(s)}` }), SEV[s]);
+
+// tooltip
+const tip = document.getElementById('tip');
+const showTip = (e, html) => {
+  tip.replaceChildren(...html); tip.style.display = 'block';
+  const r = e.target.getBoundingClientRect ? e.target.getBoundingClientRect() : null;
+  let x = e.clientX ?? (r.left + r.width / 2), y = e.clientY ?? r.top;
+  if (e.type === 'focus' && r) { x = r.left + r.width / 2; y = r.top; }
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  x = Math.min(Math.max(8, x - w / 2), innerWidth - w - 8);
+  y = y - h - 12 < 8 ? y + 18 : y - h - 12;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+};
+const hideTip = () => { tip.style.display = 'none'; };
+const bindTip = (node, build) => {
+  node.addEventListener('pointermove', e => showTip(e, build()));
+  node.addEventListener('focus', e => showTip(e, build()));
+  node.addEventListener('pointerleave', hideTip);
+  node.addEventListener('blur', hideTip);
+};
+const tipFinding = f => () => [el('b', { text: `${f.id} · ${f.title}` }), el('span', { class: 'm', text: `${SEV[f.sev]} · ${AREA[f.area]} · ${SCOPE[f.scope]} · 工作量 ${f.effort}` })];
+
+// KPIs
+const counts = Object.fromEntries(SEV_ORDER.map(s => [s, F.filter(f => f.sev === s).length]));
+document.getElementById('ntotal').textContent = F.length;
+const nt = document.getElementById('ntrial'); if (nt) nt.textContent = F.filter(f => f.scope === 'trial').length;
+const kpis = document.getElementById('kpis');
+const t1 = el('div', { class: 'box tile' }, el('div', { class: 'eyebrow', text: '发现问题' }), el('div', { class: 'v', text: String(F.length) }));
+const sb = el('div', { class: 'sevbar', role: 'img', 'aria-label': SEV_ORDER.map(s => `${SEV[s]} ${counts[s]}`).join('，') });
+SEV_ORDER.forEach(s => sb.append(el('span', { style: `flex:${counts[s]};background:${sevColor(s)}` })));
+t1.append(sb, el('div', { class: 'd', text: SEV_ORDER.map(s => `${SEV[s]} ${counts[s]}`).join(' · ') }));
+kpis.append(t1);
+[
+  ['测试', '128 / 128', '全部通过；14 个文件，13.6 秒'],
+  ['行覆盖率', '61%', '采集链路 0%，见专题 5'],
+  ['完整版首屏 JS', '283 kB', 'gzip；试用版 79 kB'],
+  ['试用版未使用代码', '≈ 7.1k 行', '前端 30/37 个文件 + 服务端 2.9k 行'],
+].forEach(([a, b, c]) => kpis.append(el('div', { class: 'box tile' }, el('div', { class: 'eyebrow', text: a }), el('div', { class: 'v', text: b }), el('div', { class: 'd', text: c }))));
+
+// heatmap
+const hm = document.getElementById('hm');
+const areas = Object.keys(AREA);
+const hrow = el('tr', {}, el('th', { text: '领域' }), ...SEV_ORDER.map(s => el('th', { class: 'c' }, sevBadge(s))), el('th', { class: 'c', text: '合计' }));
+hm.append(el('thead', {}, hrow));
+const tb = el('tbody');
+const maxCell = Math.max(...areas.flatMap(a => SEV_ORDER.map(s => F.filter(f => f.area === a && f.sev === s).length)));
+areas.forEach(a => {
+  const tr = el('tr', {}, el('th', { text: AREA[a] }));
+  SEV_ORDER.forEach(s => {
+    const list = F.filter(f => f.area === a && f.sev === s);
+    const n = list.length;
+    const td = el('td', { class: 'cell' + (n ? '' : ' zero'), text: n ? String(n) : '·' });
+    if (n) {
+      const pct = 14 + Math.round(56 * n / maxCell);
+      td.style.background = `color-mix(in oklab, ${sevColor(s)} ${pct}%, transparent)`;
+      td.tabIndex = 0; td.setAttribute('role', 'button');
+      td.setAttribute('aria-label', `${AREA[a]}，${SEV[s]}，${n} 条，点击筛选`);
+      bindTip(td, () => [el('b', { text: `${AREA[a]} · ${SEV[s]} · ${n} 条` }), ...list.map(f => el('div', { text: `${f.id} ${f.title}` }))]);
+      const go = () => { setFilter({ sev: [s], area: a, scope: '', q: '' }); document.getElementById('list').scrollIntoView({ behavior: 'smooth' }); };
+      td.addEventListener('click', go); td.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+    }
+    tr.append(td);
+  });
+  tr.append(el('td', { class: 'tot', text: String(F.filter(f => f.area === a).length) }));
+  tb.append(tr);
+});
+hm.append(tb);
+
+// priority matrix
+const pm = document.getElementById('pm');
+pm.append(el('div', { class: 'hd', text: '影响 ↓' }), el('div', { class: 'hd', text: EFFORT.S }), el('div', { class: 'hd', text: EFFORT.M }));
+const chip = f => {
+  const c = el('a', { class: 'chip', href: `#f-${f.id}`, 'aria-label': `${f.id} ${f.title}` }, el('span', { class: 'dot', style: `background:${sevColor(f.sev)}` }), f.id);
+  bindTip(c, tipFinding(f));
+  c.addEventListener('click', e => { e.preventDefault(); openFinding(f.id); });
+  return c;
+};
+for (let i = 5; i >= 1; i--) {
+  pm.append(el('div', { class: 'rowh', text: `${i}${i === 5 ? ' 最高' : i === 1 ? ' 最低' : ''}` }));
+  ['S', 'M'].forEach(ef => {
+    const cell = el('div', { class: 'cellp' + (i >= 4 && ef === 'S' ? ' hot' : '') });
+    F.filter(f => f.impact === i && f.effort === ef).sort((a, b) => SEV_ORDER.indexOf(a.sev) - SEV_ORDER.indexOf(b.sev)).forEach(f => cell.append(chip(f)));
+    pm.append(cell);
+  });
+}
+
+// top 10
+const TOP = [
+  ['先停掉试用版的采集器，或者确保只有一个实例在采集', '如果你真的在并行运行两个实例，用量数据现在就在两边分裂。改动很小：加一个开关跳过 collector.start()。', ['D3']],
+  ['完整版加全局 Host 校验，并屏蔽凭据下载', '三处小改动，堵上“任何网页都能读写你的代理配置、拿走 OAuth token”这条路。', ['S1', 'S2', 'S3']],
+  ['让采集链路经得起坏数据', 'try/catch、busy_timeout、事务批量插入、心跳。用量历史是这个项目存在的理由，丢了就补不回来。', ['D1', 'D2', 'D7']],
+  ['所有“花钱 / 写配置”的按钮加防重复提交', '一个 busy 属性解决重置额度双花、配置重复保存、重复建 key。', ['U1', 'U4']],
+  ['把试用版改成独立入口', '这一个结构性调整能顺带解决死代码、文档失配、手机端无标题、无法测试中间件等问题。', ['R1', 'E1', 'E2', 'U11', 'T1']],
+  ['发布流水线：镜像等 CI 通过，默认镜像指向自己', '现在测试挂了也会自动部署，而 compose 默认拉的是上游那个没有登录的版本。', ['E3', 'S14']],
+  ['建立统一的加载 / 错误 / 重试模式', '这是界面“不成熟感”的主要来源。一个钩子加一个错误组件，6 个页面一起受益。', ['U2', 'U3', 'U5', 'U6', 'U7', 'U8', 'R2']],
+  ['给数据链路和安全边界补测试', '覆盖率 61% 看着还行，但最关键的两块是 0。', ['T3', 'T1', 'T2']],
+  ['轮询改成可见时才运行，并懒加载配置页', '少打很多上游请求，降低 429 的概率；完整版首屏 JS 减半。', ['P2', 'P3', 'P1']],
+  ['提高次级文字对比度', '改一个 CSS 变量，所有小字都更易读。', ['A1']],
+];
+const top = document.getElementById('top10');
+TOP.forEach(([t, why, ids], i) => {
+  const box = el('div', { class: 'box it' }, el('div', { class: 'n', text: String(i + 1).padStart(2, '0') }));
+  const body = el('div', {}, el('div', { class: 't', text: t }), el('div', { class: 'why', text: why }));
+  const idw = el('div', { class: 'ids' }); ids.forEach(id => idw.append(chip(byId[id])));
+  body.append(idw); box.append(body); top.append(box);
+});
+
+// state matrix
+const SM_COLS = ['首次加载', '刷新中 / 切换', '空状态', '出错与重试', '重复提交 / 离开保护'];
+const SM = [
+  ['额度', ['no', '账号数和时间线先显示“无”'], ['ok', '旧读数保留并标为过期'], ['no', '加载前就显示空态'], ['ok', '错误翻译清楚，单卡可刷新'], ['part', '刷新按钮不防重复；重置额度可双花']],
+  ['用量（试用版唯一页面）', ['no', '标题下空白'], ['no', '无提示，旧响应可能覆盖新选择'], ['part', '未单独设计'], ['part', '页内错误文字，无重试按钮'], ['ok', '只读，不涉及']],
+  ['账号', ['no', '冷启动显示“还没有账号”'], ['part', '开关有 busy 状态'], ['no', '同左，不区分加载中'], ['no', '开关失败静默弹回'], ['ok', '删除前确认']],
+  ['API Key', ['no', '加载失败时页面空白'], ['part', '—'], ['ok', '“No keys configured.”'], ['no', '只有 3.5 秒提示'], ['no', '新建可重复；整表覆盖写入']],
+  ['配置', ['no', '失败时永远停在 Loading…'], ['ok', 'diff 审阅 + If-Match'], ['ok', '不适用'], ['no', '只有提示，无重试'], ['no', '重新加载 / 切页会丢草稿']],
+  ['共享', ['part', '基于 loaded 判断'], ['ok', '有请求序号防乱序'], ['ok', '空态有引导文案'], ['part', '只有提示'], ['part', '暂停有防重复，其他操作没有']],
+];
+const SYM = { ok: '✓', part: '◐', no: '✗' }, SYMT = { ok: '处理得当', part: '部分', no: '缺失' };
+const sm = document.getElementById('sm');
+sm.append(el('thead', {}, el('tr', {}, el('th', { text: '页面' }), ...SM_COLS.map(c => el('th', { text: c })))));
+const smb = el('tbody');
+SM.forEach(([page, ...cells]) => {
+  const tr = el('tr', {}, el('td', { text: page }));
+  cells.forEach(([k, note]) => tr.append(el('td', {}, el('div', { class: `st ${k}` }, el('b', { text: SYM[k], 'aria-hidden': 'true' }), SYMT[k]), el('div', { class: 'small muted', text: note }))));
+  smb.append(tr);
+});
+sm.append(smb);
+
+// contrast
+const ct = document.getElementById('ct');
+[
+  ['--fg', 0.97, 17.48], ['--fg-1', 0.845, 11.86], ['--fg-2', 0.683, 6.69], ['--fg-3', 0.51, 3.32], ['周末表头', 0.42, 2.25], ['建议 --fg-3', 0.62, 5.23],
+].forEach(([name, L, r]) => {
+  const max = 18;
+  const row = el('div', { class: 'ctr' },
+    el('div', {}, el('div', { class: 'sample', style: `color:oklch(${L} 0 0)`, text: '额度 72% · Aa' }), el('div', { class: 'tk', text: name })),
+    el('div', { class: 'rt' }, el('div', { class: 'fill', style: `width:${(r / max) * 100}%;${r < 4.5 ? 'background:#e66767' : ''}` }), el('div', { class: 'th', style: `left:${(4.5 / max) * 100}%` })),
+    el('div', { class: 'rv', text: `${r.toFixed(1)}:1 ${r >= 4.5 ? '达标' : '不达标'}` }));
+  ct.append(row);
+});
+
+// generic bars
+const bars = (id, rows, opts = {}) => {
+  const host = document.getElementById(id);
+  const max = opts.max ?? Math.max(...rows.map(r => r.v));
+  rows.forEach(r => {
+    const tr = el('div', { class: 'tr' });
+    if (r.na) tr.append(el('span', { class: 'na', text: '未加载' }));
+    else tr.append(el('div', { class: 'fill', style: `width:${Math.max(0.5, (r.v / max) * 100)}%;${r.c ? `background:${r.c}` : ''}` }));
+    if (opts.ref != null) tr.append(el('div', { class: 'ref', style: `left:${(opts.ref / max) * 100}%` }));
+    const row = el('div', { class: 'br', tabindex: '0' }, el('div', { class: 'lb', text: r.l, title: r.l }), tr, el('div', { class: 'vl', text: r.na ? '0' : (opts.fmt ? opts.fmt(r.v) : String(r.v)) }));
+    if (r.tip) bindTip(row, () => [el('b', { text: r.l }), el('span', { class: 'm', text: r.tip })]);
+    host.append(row);
+  });
+};
+
+bars('polls', [
+  { l: '额度页·最近活动 15s', v: 240, tip: 'QuotaPage.tsx:26 · 只在额度页' },
+  { l: '用量页 30s', v: 120, tip: 'UsagePage.tsx:332 · 只在用量页' },
+  { l: '账号列表 30s', v: 120, tip: 'store.tsx:109 · 完整版所有页面' },
+  { l: '全部额度 5min × 4 账号', v: 48, tip: 'store.tsx:110 · 每个账号打一次上游额度接口，所有页面' },
+  { l: '账号时段 5min', v: 12, tip: 'Timeline.tsx:40 · 额度页' },
+  { l: '共享概览 5min', v: 12, tip: 'lenders.ts:18 · 额度页' },
+], { fmt: v => `${v}/h` });
+
+// bundle
+const BCAT = [['react-dom', 'var(--s1)'], ['CodeMirror', 'var(--s2)'], ['Lezer', 'var(--s5)'], ['yaml', 'var(--s4)'], ['应用代码', 'var(--s3)'], ['其他', 'var(--s-other)']];
+const bl = document.getElementById('bundleLegend');
+BCAT.forEach(([n, c]) => bl.append(el('span', {}, el('span', { class: 'sw', style: `background:${c}` }), n)));
+const BUND = [['完整版（2dad63b^）', [202, 330, 56, 94, 99, 77]], ['试用版（当前）', [202, 0, 0, 0, 23, 15.5]]];
+const bmax = 858;
+const bh = document.getElementById('bundle');
+BUND.forEach(([name, vals]) => {
+  const total = vals.reduce((a, b) => a + b, 0);
+  const stk = el('div', { class: 'stk', style: `width:${(total / bmax) * 100}%`, role: 'img', 'aria-label': `${name} 共 ${Math.round(total)} KiB：` + vals.map((v, i) => v ? `${BCAT[i][0]} ${v}` : '').filter(Boolean).join('，') });
+  vals.forEach((v, i) => {
+    if (!v) return;
+    const seg = el('span', { style: `flex:${v};background:${BCAT[i][1]};${BCAT[i][0] === 'yaml' ? 'color:#0b0b0b' : ''}`, tabindex: '0', text: v / total > 0.09 ? `${BCAT[i][0]} ${Math.round(v)}` : '' });
+    bindTip(seg, () => [el('b', { text: `${BCAT[i][0]} · ${v} KiB` }), el('span', { class: 'm', text: `${name}的 ${Math.round((v / total) * 100)}%` })]);
+    stk.append(seg);
+  });
+  bh.append(el('div', { class: 'stkrow' }, el('div', {}, el('div', { text: name }), el('div', { class: 'small muted mono', text: `${Math.round(total)} KiB` })), el('div', {}, stk)));
+});
+
+// coverage
+const core = 'var(--s2)';
+bars('covS', [
+  { l: 'collector/cliproxy.ts', na: 1, tip: '采集器：SUBSCRIBE + LPOP，写入 requests 表' },
+  { l: 'collector/resp.ts', na: 1, tip: 'RESP 协议解析' },
+  { l: 'index.ts（试用版守卫）', na: 1, tip: 'Basic Auth + 只读中间件' },
+  { l: 'http/app.ts', na: 1, tip: '/api 路由，包括 /api/import' },
+  { l: 'http/connect.ts · lan.ts', na: 1 },
+  { l: 'import/* · tailnet · env', na: 1 },
+  { l: 'usage/cliproxy-record.ts', v: 6.0, c: core, tip: '用量记录到数据库行的映射' },
+  { l: 'http/meta-quota.ts', v: 8.3 },
+  { l: 'history/indexer.ts', v: 8.8 },
+  { l: 'history/jev.ts', v: 20.2 },
+  { l: 'machines.ts', v: 34.7 },
+  { l: 'http/muse-relay.ts', v: 50.0 },
+  { l: 'usage/pricing.ts', v: 56.8 },
+  { l: 'http/history.ts', v: 58.2 },
+  { l: 'http/sharing.ts', v: 71.0 },
+  { l: 'http/management.ts', v: 76.7, c: core, tip: '管理桥与写白名单' },
+  { l: 'usage/summary.ts', v: 86.1 },
+  { l: 'history/redact.ts', v: 93.9 },
+  { l: 'drain.ts', v: 94.5 },
+  { l: 'sharing.ts', v: 98.1 },
+  { l: 'config-write.ts', v: 100 },
+].map(r => r.na ? { ...r, c: core } : r), { max: 100, ref: 60, fmt: v => `${Math.round(v)}%` });
+document.querySelectorAll('#covS .br').forEach((row, i) => { if (i < 6) row.querySelector('.lb').style.color = 'var(--r-fg)'; });
+bars('covF', [
+  { l: 'pages/*（6 个页面）', na: 1 },
+  { l: 'UsageChart / QuotaCard 等', na: 1 },
+  { l: 'components/PoolRow.tsx', v: 15.9 },
+  { l: 'components/ui.tsx', v: 23.5, tip: 'ConfirmDialog / Toaster：U1、U13 所在' },
+  { l: 'lib/lenders.ts', v: 25.0 },
+  { l: 'lib/timeline.ts', v: 29.8 },
+  { l: 'lib/errors.ts', v: 31.8 },
+  { l: 'lib/usage.ts', v: 33.3 },
+  { l: 'lib/format.ts', v: 40.7 },
+  { l: 'lib/store.tsx', v: 41.9, tip: '全局状态与轮询：U2、U3、P2 所在' },
+  { l: 'lib/quota.ts', v: 51.0 },
+  { l: 'components/Timeline.tsx', v: 61.8 },
+  { l: 'lib/sharing.ts', v: 62.5 },
+  { l: 'lib/status.ts', v: 69.7 },
+  { l: 'lib/api.ts', v: 75.5 },
+  { l: 'lib/pool.ts', v: 100 },
+], { max: 100, ref: 60, fmt: v => `${Math.round(v)}%` });
+
+bars('loc', [
+  { l: '前端 TS/TSX', v: 5086 }, { l: '服务端 TS', v: 4514 }, { l: 'CSS', v: 2555 }, { l: '测试', v: 1854, c: 'var(--s3)' },
+], { fmt: v => v.toLocaleString('en-US') });
+bars('churn', [
+  { l: 'styles/quota.css', v: 23 }, { l: 'http/sharing.test.ts', v: 22 }, { l: 'QuotaCard.tsx', v: 20 }, { l: 'styles/pages.css', v: 18 },
+  { l: 'server/sharing.ts', v: 17 }, { l: 'UsagePage.tsx', v: 16 }, { l: 'server/index.ts', v: 15 }, { l: 'http/sharing.ts', v: 14 },
+]);
+
+// findings list
+const state = { sev: [...SEV_ORDER], area: '', scope: '', q: '' };
+const sevtg = document.getElementById('sevtg');
+SEV_ORDER.forEach(s => {
+  const b = el('button', { type: 'button', 'aria-pressed': 'true', 'data-sev': s }, el('span', { class: 'dot', style: `background:${sevColor(s)}` }), `${SEV[s]} ${counts[s]}`);
+  b.addEventListener('click', () => {
+    const on = state.sev.includes(s);
+    state.sev = on ? state.sev.filter(x => x !== s) : [...state.sev, s];
+    if (!state.sev.length) state.sev = [...SEV_ORDER];
+    render();
+  });
+  sevtg.append(b);
+});
+const fArea = document.getElementById('fArea');
+fArea.append(el('option', { value: '', text: '全部领域' }), ...Object.entries(AREA).map(([k, v]) => el('option', { value: k, text: `${v}（${F.filter(f => f.area === k).length}）` })));
+const fScope = document.getElementById('fScope'), fq = document.getElementById('fq');
+fArea.addEventListener('change', () => { state.area = fArea.value; render(); });
+fScope.addEventListener('change', () => { state.scope = fScope.value; render(); });
+fq.addEventListener('input', () => { state.q = fq.value.trim().toLowerCase(); render(); });
+document.getElementById('fclear').addEventListener('click', () => setFilter({ sev: [...SEV_ORDER], area: '', scope: '', q: '' }));
+function setFilter(s) { Object.assign(state, s); fArea.value = state.area; fScope.value = state.scope; fq.value = state.q; render(); }
+
+const list = document.getElementById('flist');
+const rows = new Map();
+F.slice().sort((a, b) => SEV_ORDER.indexOf(a.sev) - SEV_ORDER.indexOf(b.sev) || b.impact - a.impact).forEach(f => {
+  const det = el('dl', { class: 'det' },
+    el('dt', { text: '位置' }), el('dd', {}, el('code', { text: f.where })),
+    el('dt', { text: '影响' }), el('dd', { text: f.why }),
+    el('dt', { text: '建议' }), el('dd', { text: f.fix }));
+  const l2 = el('div', { class: 'l2' }, el('span', { class: 'tag', text: AREA[f.area] }), el('span', { class: 'tag', text: SCOPE[f.scope] }), el('span', { class: 'tag', text: `工作量 ${f.effort}` }), el('span', { class: 'tag', text: `影响 ${f.impact}/5` }));
+  if (f.status) l2.append(el('span', { class: 'tag v', text: f.status }));
+  const row = el('div', { class: 'frow', id: `f-${f.id}`, tabindex: '0', role: 'button', 'aria-expanded': 'false' },
+    el('div', { class: 'l1' }, el('span', { class: 'id', text: f.id }), el('span', { class: 'ti', text: f.title }), sevBadge(f.sev)), l2, det);
+  const toggle = () => { row.classList.toggle('open'); row.setAttribute('aria-expanded', row.classList.contains('open')); };
+  row.addEventListener('click', e => { if (!e.target.closest('code')) toggle(); });
+  row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  rows.set(f.id, row); list.append(row);
+});
+function render() {
+  sevtg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', state.sev.includes(b.dataset.sev)));
+  let n = 0;
+  rows.forEach((row, id) => {
+    const f = byId[id];
+    const hay = `${f.id} ${f.title} ${f.where} ${f.why} ${f.fix}`.toLowerCase();
+    const show = state.sev.includes(f.sev) && (!state.area || f.area === state.area) && (!state.scope || f.scope === state.scope) && (!state.q || hay.includes(state.q));
+    row.style.display = show ? '' : 'none'; if (show) n++;
+  });
+  document.getElementById('fcount').textContent = `显示 ${n} / ${F.length} 条`;
+}
+function openFinding(id) {
+  setFilter({ sev: [...SEV_ORDER], area: '', scope: '', q: '' });
+  const row = rows.get(id); row.classList.add('open'); row.setAttribute('aria-expanded', 'true');
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' }); row.focus({ preventScroll: true });
+}
+document.querySelectorAll('.rp a[href^="#f-"]').forEach(a => { if (!a.classList.contains('chip')) a.addEventListener('click', e => { e.preventDefault(); openFinding(a.getAttribute('href').slice(3)); }); });
+render();
+
+// roadmap
+const RM = [
+  ['第 1 周 · 止血', '全部是 S 级改动，主要解决安全和丢数据。', ['D3', 'S1', 'S2', 'S3', 'D1', 'D2', 'U1', 'U4', 'S14', 'E3', 'E1', 'E2', 'T2']],
+  ['第 2–4 周 · 打磨体验和地基', '统一界面状态模式，拆出试用版入口，给关键链路补测试。', ['R1', 'U2', 'U3', 'U5', 'U6', 'U7', 'U8', 'U9', 'R2', 'T1', 'T3', 'P1', 'P2', 'P3', 'A1', 'E5', 'E9', 'E10']],
+  ['之后 · 体系化', '设计 token、共享代码层、性能和供应链。', ['R3', 'R4', 'R6', 'R7', 'P4', 'D4', 'A2', 'A3', 'T4', 'E6', 'E7', 'E8', 'U15']],
+];
+const rm = document.getElementById('roadmap');
+RM.forEach(([t, d, ids]) => {
+  const w = el('div', { class: 'ids' }); ids.forEach(id => w.append(chip(byId[id])));
+  rm.append(el('div', { class: 'box' }, el('h3', { text: t }), el('p', { class: 'small muted', text: d }), w));
+});
+})();
+</script>
+</body>
+</html>
