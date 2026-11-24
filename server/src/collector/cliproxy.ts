@@ -45,6 +45,7 @@ export class CliproxyCollector {
 
   private async run() {
     const sub = new RespConnection()
+    const closed = new Promise<void>((resolve) => (sub.onClose = () => resolve()))
     try {
       await sub.connect(this.options.host, this.options.port)
       await sub.command('AUTH', this.options.managementKey)
@@ -56,7 +57,7 @@ export class CliproxyCollector {
       console.log('[collector] subscribed to CLIProxyAPI usage')
 
       await this.drainQueue()
-      await new Promise<void>((resolve) => (sub.onClose = () => resolve()))
+      await closed
       this.status.lastError = 'connection closed'
     } catch (err) {
       this.status.lastError = (err as Error).message

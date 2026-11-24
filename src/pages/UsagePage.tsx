@@ -1,21 +1,19 @@
 // Usage: laid out like T3 Code's usage view (total, per-provider split, chart,
 // totals, breakdown), styled like the rest of this dashboard.
 
-import { ChevronRight, Pencil, RotateCcw } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { ProviderMark } from '../components/ProviderMark'
 import { bucketLabel, UsageChart, type ChartGroup } from '../components/UsageChart'
-import { PageHead, Segmented, toast } from '../components/ui'
+import { PageHead, Segmented } from '../components/ui'
 import {
   byProviderOrder,
-  clearDeviceName,
   dailySeries,
   formatCount,
   formatPercent,
   formatTokens,
   formatUsd,
   getUsage,
-  nameDevice,
   providerLabel,
   type MachineUsage,
   type Range,
@@ -145,71 +143,7 @@ function RowMeta({ row, share }: { row: Totals; share: number }) {
   )
 }
 
-function MachineName({ machine, onChange }: { machine: MachineUsage; onChange: () => void }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(machine.name)
-
-  // Renaming applies to every identity this row was recognized by.
-  const save = async () => {
-    setEditing(false)
-    const name = draft.trim()
-    if (!name || name === machine.name) return
-    try {
-      await Promise.all(machine.identities.map((i) => nameDevice(i.kind, i.value, name)))
-      onChange()
-    } catch (err) {
-      toast(`Couldn’t rename: ${(err as Error).message}`)
-    }
-  }
-
-  const reset = async () => {
-    await Promise.all(machine.identities.map((i) => clearDeviceName(i.kind, i.value))).catch((err) =>
-      toast(`Couldn’t reset: ${err.message}`),
-    )
-    onChange()
-  }
-
-  if (editing) {
-    return (
-      <input
-        className="input udev-input"
-        autoFocus
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') save()
-          if (e.key === 'Escape') setEditing(false)
-        }}
-      />
-    )
-  }
-  return (
-    <span className="udev">
-      <button
-        className="udev-name"
-        title="Rename"
-        onClick={() => {
-          setDraft(machine.name)
-          setEditing(true)
-        }}
-      >
-        {machine.name}
-        <Pencil size={12} className="faint" />
-      </button>
-      {machine.nameSource === 'tailscale' && <span className="tag">tailscale</span>}
-      {machine.nameSource === 'custom' && (
-        <button className="udev-reset faint" title="Use the Tailscale name again" onClick={reset}>
-          <RotateCcw size={12} />
-        </button>
-      )}
-    </span>
-  )
-}
-
-// A machine row that expands to show its models. Model shares are of that
-// machine's total, with a thin bar so the mix reads at a glance.
-function MachineRows({ machine, total, metric, onChange }: { machine: MachineUsage; total: number; metric: Metric; onChange: () => void }) {
+function MachineRows({ machine, total, metric }: { machine: MachineUsage; total: number; metric: Metric }) {
   const [open, setOpen] = useState(false)
   const machineTotal = metric === 'cost' ? machine.costMicros : machine.processedTokens
   const models = metric === 'tokens' ? [...machine.models].sort((a, b) => b.processedTokens - a.processedTokens) : machine.models
@@ -236,7 +170,7 @@ function MachineRows({ machine, total, metric, onChange }: { machine: MachineUsa
             >
               <ChevronRight size={14} />
             </button>
-            <MachineName machine={machine} onChange={onChange} />
+            <span>{machine.name}</span>
           </span>
           <RowMeta row={machine} share={shareOf(machine, total, metric)} />
         </td>
@@ -277,7 +211,7 @@ function MachineRows({ machine, total, metric, onChange }: { machine: MachineUsa
   )
 }
 
-function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary; kind: BreakdownKind; metric: Metric; onChange: () => void }) {
+function Breakdown({ summary, kind, metric }: { summary: UsageSummary; kind: BreakdownKind; metric: Metric }) {
   const total = metric === 'cost' ? summary.totals.costMicros : summary.totals.processedTokens
   const sort = <T extends Totals>(rows: T[]) =>
     metric === 'tokens' ? [...rows].sort((a, b) => b.processedTokens - a.processedTokens) : rows
@@ -349,7 +283,7 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
             </tr>
           ))}
         {kind === 'machine' &&
-          sort(summary.byMachine).map((m) => <MachineRows key={m.name} machine={m} total={total} metric={metric} onChange={onChange} />)}
+          sort(summary.byMachine).map((m) => <MachineRows key={m.name} machine={m} total={total} metric={metric} />)}
         {kind === 'account' &&
           sort(summary.byAccount).map((a) => (
             <tr key={a.name}>
@@ -475,7 +409,7 @@ export function UsagePage() {
               </div>
             </div>
             <div className="panel utable-wrap">
-              <Breakdown summary={summary} kind={prefs.breakdown} metric={prefs.metric} onChange={load} />
+              <Breakdown summary={summary} kind={prefs.breakdown} metric={prefs.metric} />
             </div>
           </section>
         </>
