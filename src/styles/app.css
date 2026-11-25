@@ -42,6 +42,8 @@
   --bad-border: rgba(239, 68, 68, 0.45);
   --shadow-toast: 0 8px 24px rgba(0, 0, 0, 0.45);
   --shadow-popover: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --backdrop: rgba(0, 0, 0, 0.56);
   --seg-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 
   /* Spacing: a 4px grid, with half steps for tight controls. */
@@ -127,6 +129,8 @@
   --bad-border: rgba(220, 38, 38, 0.4);
   --shadow-toast: 0 8px 24px rgba(0, 0, 0, 0.1);
   --shadow-popover: 0 10px 24px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 20px 56px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --backdrop: rgba(0, 0, 0, 0.26);
   --seg-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
 }
 
