@@ -14,11 +14,12 @@ COPY . .
 RUN npm run build
 
 # Production dependencies only, in their own stage so they are cached until
-# the lockfile changes.
+# the lockfile changes. --omit=optional drops drizzle's optional peers (type
+# packages); the server needs only hono and drizzle-orm.
 FROM node:${NODE_VERSION}-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
+RUN npm ci --omit=dev --omit=optional --ignore-scripts
 
 FROM tailscale/tailscale:v1.102.5 AS tailscale
 

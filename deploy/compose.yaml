@@ -28,6 +28,8 @@ services:
     network_mode: host
     restart: unless-stopped
     env_file: ${DATA}/env
+    # The image runs as uid/gid 1000. Before the first start, and after
+    # upgrading from an image that ran as root: chown -R 1000:1000 $DATA/data
     volumes:
       - ${DATA}/data:/app/data
       - socket:/var/run/tailscale

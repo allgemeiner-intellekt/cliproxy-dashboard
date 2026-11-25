@@ -147,8 +147,16 @@ export function isUsageSummary(v: unknown): v is UsageSummary {
 // The viewer's time zone, so days are local days.
 const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
-// 503 means the collector is down; the body still describes it.
-export const getHealth = (signal?: AbortSignal) => api<Health>('/health', { signal, okStatuses: [503] })
+const isHealth = (v: unknown): v is Health =>
+  isObject(v) && isObject(v.collector) && typeof v.collector.connected === 'boolean'
+
+// 503 means the collector is down; the body still describes it. Anything else
+// (e.g. a proxy's own 503) counts as the server being unreachable.
+export async function getHealth(signal?: AbortSignal): Promise<Health> {
+  const health = await api<unknown>('/health', { signal, okStatuses: [503] })
+  if (!isHealth(health)) throw new Error('Unexpected response from the usage server')
+  return health
+}
 export async function getUsage(range: Range, signal?: AbortSignal): Promise<UsageSummary> {
   const summary = await api<unknown>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
   if (!isUsageSummary(summary)) throw new Error('Unexpected response from the usage server')
