@@ -13,8 +13,11 @@ const port = Number(env('USAGE_SERVER_PORT') ?? '5174')
 // A wildcard listener is reachable on loopback.
 const target = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host
 
-// node:http rather than fetch: it ignores http_proxy and never follows redirects.
-const req = request({ host: target, port, path: '/api/health', timeout: 4000 }, (res) => {
+// node:http rather than fetch: it doesn't follow redirects. agent: false
+// keeps the request off the global agent, which honours HTTP_PROXY when
+// NODE_USE_ENV_PROXY is set. Host is localhost so the API's Host check
+// accepts it whatever name the listener was configured with.
+const req = request({ host: target, port, path: '/api/health', timeout: 4000, agent: false, headers: { host: 'localhost' } }, (res) => {
   res.resume()
   if (res.statusCode !== 200) console.error(`health: HTTP ${res.statusCode}`)
   process.exit(res.statusCode === 200 ? 0 : 1)

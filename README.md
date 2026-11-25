@@ -97,7 +97,7 @@ docker run -d --name cliproxy-dashboard --restart unless-stopped \
 
 ### Tailscale
 
-[`deploy/compose.yaml`](deploy/compose.yaml) runs the dashboard next to a Tailscale sidecar that serves it over HTTPS on your tailnet ([`deploy/serve.json`](deploy/serve.json)). As with plain Docker, run `sudo chown -R 1000:1000 "$DATA/data"` before the first start, and again after upgrading from an image that ran as root.
+[`deploy/compose.yaml`](deploy/compose.yaml) runs the dashboard next to a Tailscale sidecar that serves it over HTTPS on your tailnet ([`deploy/serve.json`](deploy/serve.json)). As with plain Docker, the data directory must belong to uid 1000. Run `mkdir -p "$DATA/data" && sudo chown -R 1000:1000 "$DATA/data"` before the first start. When upgrading from an image that ran as root, run the `chown` before starting the new image.
 
 The image has a `HEALTHCHECK`. It fails, and `GET /api/health` returns 503, once the collector has been disconnected from CLIProxyAPI for more than 2 minutes.
 

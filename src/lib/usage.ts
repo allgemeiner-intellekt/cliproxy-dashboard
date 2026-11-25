@@ -147,8 +147,12 @@ export function isUsageSummary(v: unknown): v is UsageSummary {
 // The viewer's time zone, so days are local days.
 const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
+// Checks the fields the status pill renders.
 const isHealth = (v: unknown): v is Health =>
-  isObject(v) && isObject(v.collector) && typeof v.collector.connected === 'boolean'
+  isObject(v) &&
+  isObject(v.collector) &&
+  typeof v.collector.connected === 'boolean' &&
+  (v.collector.lastError === null || v.collector.lastError === undefined || isString(v.collector.lastError))
 
 // 503 means the collector is down; the body still describes it. Anything else
 // (e.g. a proxy's own 503) counts as the server being unreachable.
