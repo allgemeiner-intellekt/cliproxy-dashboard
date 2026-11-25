@@ -16,7 +16,7 @@
 import { and, eq, gte, min, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import type { Db } from '../db/client'
-import { NULL_KEY, SLOT_MS } from '../db/rollup'
+import { decodeKey, SLOT_MS } from '../db/rollup'
 import { machineIdentities, machines, requests, tailnetDevices, usageRollup, usageSessions } from '../db/schema'
 import { EARLIEST_PLAUSIBLE_MS } from './timestamps'
 
@@ -162,8 +162,8 @@ const byIp = alias(machineIdentities, 'by_ip')
 const keyMachine = alias(machines, 'key_machine')
 const ipMachine = alias(machines, 'ip_machine')
 
-const rollupKey = sql`nullif(${usageRollup.clientKeyHash}, ${sql.raw(NULL_KEY)})`
-const rollupIp = sql`nullif(${usageRollup.clientIp}, ${sql.raw(NULL_KEY)})`
+const rollupKey = sql.raw(decodeKey('"usage_rollup"."client_key_hash"'))
+const rollupIp = sql.raw(decodeKey('"usage_rollup"."client_ip"'))
 const machine = {
   name: sql<string>`coalesce(${keyMachine.name}, ${ipMachine.name}, ${tailnetDevices.name}, ${rollupIp}, 'unknown')`,
   nameSource: sql<'custom' | 'tailscale' | null>`case
@@ -204,14 +204,22 @@ const CACHE_SIZE = 32
 const caches = new WeakMap<Db, Map<string, UsageSummary>>()
 
 export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.now()): UsageSummary {
+  // Inside a caller's transaction the result may include uncommitted writes
+  // that a rollback would undo (total_changes() doesn't rewind), so it
+  // mustn't be cached or served from cache.
+  if (db.$client.inTransaction) return computeSummary(db, range, timeZone, summaryWindow(db, range, timeZone, now))
   // One read transaction: the version check, totals and sessions all see the
   // same snapshot, even if another process commits meanwhile.
   return db.$client.transaction(() => cachedSummary(db, range, timeZone, now))()
 }
 
-function cachedSummary(db: Db, range: Range, timeZone: string, now: number): UsageSummary {
+function summaryWindow(db: Db, range: Range, timeZone: string, now: number) {
   const earliest = db.select({ at: min(requests.occurredAt) }).from(requests).get()?.at
-  const window = windowFor(range, timeZone, now, earliest ? earliest.getTime() : null)
+  return windowFor(range, timeZone, now, earliest ? earliest.getTime() : null)
+}
+
+function cachedSummary(db: Db, range: Range, timeZone: string, now: number): UsageSummary {
+  const window = summaryWindow(db, range, timeZone, now)
   const { changes } = db.$client.query('SELECT total_changes() AS changes').get() as { changes: number }
   const { data_version: version } = db.$client.query('PRAGMA data_version').get() as { data_version: number }
   const cacheKey = JSON.stringify([range, timeZone, window.startMs, window.keys.length, window.keys.at(-1), changes, version])
@@ -230,7 +238,7 @@ function computeSummary(db: Db, range: Range, timeZone: string, window: Window) 
   // One row per slot × provider × model × account × machine; everything else
   // is built from these.
   const provider = providerOf(usageRollup.model, usageRollup.provider)
-  const account = sql<string>`coalesce(nullif(${usageRollup.accountLabel}, ${sql.raw(NULL_KEY)}), 'unknown')`
+  const account = sql<string>`coalesce(${sql.raw(decodeKey('"usage_rollup"."account_label"'))}, 'unknown')`
   const groups = db
     .select({
       slot: usageRollup.slot,
@@ -248,11 +256,11 @@ function computeSummary(db: Db, range: Range, timeZone: string, window: Window) 
       outputTokens: sql<number>`sum(${usageRollup.outputTokens})`,
     })
     .from(usageRollup)
-    .leftJoin(byKey, and(eq(byKey.kind, 'key'), eq(byKey.value, usageRollup.clientKeyHash)))
+    .leftJoin(byKey, and(eq(byKey.kind, 'key'), sql`${byKey.value} = ${rollupKey}`))
     .leftJoin(keyMachine, eq(keyMachine.id, byKey.machineId))
-    .leftJoin(byIp, and(eq(byIp.kind, 'ip'), eq(byIp.value, usageRollup.clientIp)))
+    .leftJoin(byIp, and(eq(byIp.kind, 'ip'), sql`${byIp.value} = ${rollupIp}`))
     .leftJoin(ipMachine, eq(ipMachine.id, byIp.machineId))
-    .leftJoin(tailnetDevices, eq(tailnetDevices.ip, usageRollup.clientIp))
+    .leftJoin(tailnetDevices, sql`${tailnetDevices.ip} = ${rollupIp}`)
     .where(gte(usageRollup.slot, window.startMs))
     .groupBy(usageRollup.slot, provider, usageRollup.model, account, machine.name, machine.identityKind, machine.identityValue)
     .all()

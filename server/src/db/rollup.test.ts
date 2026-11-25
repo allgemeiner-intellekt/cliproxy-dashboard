@@ -39,7 +39,7 @@ const row = (overrides: Partial<typeof requests.$inferInsert> = {}): typeof requ
 })
 
 describe('usage rollup triggers', () => {
-  test('inserts aggregate into 15-minute slots, NULLs as the NUL key', () => {
+  test('inserts aggregate into 15-minute slots, with nullable keys encoded', () => {
     const db = openDb(':memory:')
     db.insert(requests)
       .values([
@@ -52,9 +52,9 @@ describe('usage rollup triggers', () => {
     expect(rollup).toHaveLength(2)
     expect(rollup[0]).toMatchObject({
       slot: Date.UTC(2026, 0, 1, 10, 0),
-      accountLabel: '\u0000',
-      clientKeyHash: '\u0000',
-      clientIp: '10.0.0.1',
+      accountLabel: 'n',
+      clientKeyHash: 'n',
+      clientIp: 'v10.0.0.1',
       records: 2,
       unpricedRecords: 1,
       costMicros: 1000,
@@ -140,10 +140,32 @@ describe('usage rollup triggers', () => {
     expectConsistent(db)
   })
 
-  test("a real '' is kept apart from NULL", () => {
+  test("'', a NUL character and NULL are three different keys", () => {
     const db = openDb(':memory:')
-    db.insert(requests).values([row({ accountLabel: '', clientIp: '' }), row({ accountLabel: null, clientIp: null })]).run()
-    expect(snapshot(db).rollup).toHaveLength(2)
+    db.insert(requests)
+      .values([row({ accountLabel: '', clientIp: '' }), row({ accountLabel: '\u0000', clientIp: '\u0000' }), row({ accountLabel: null, clientIp: null })])
+      .run()
+    expect(snapshot(db).rollup).toHaveLength(3)
+    expectConsistent(db)
+  })
+
+  test("deleting a long session's older rows leaves last_at alone and stays fast", () => {
+    const db = openDb(':memory:')
+    const base = Date.UTC(2026, 0, 1)
+    const insert = db.$client.prepare(
+      "INSERT INTO requests (id, source, occurred_at, received_at, provider, model, failed, session_id, tool) VALUES (?, 'cliproxy', ?, 0, 'p', 'm', 0, 'S', NULL)",
+    )
+    db.$client.transaction(() => {
+      for (let i = 0; i < 5000; i++) insert.run(`r${i}`, base + i * 1000)
+    })()
+    const started = performance.now()
+    db.$client.exec(`DELETE FROM requests WHERE occurred_at < ${base + 4999 * 1000}`)
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(snapshot(db).sessions.map((x) => [x.tool, x.lastAt])).toEqual([['other', base + 4999 * 1000]])
+    // Deleting the latest falls back to the newest remaining (NULL tool counts as 'other').
+    insert.run('older', base - 1000)
+    db.$client.exec(`DELETE FROM requests WHERE id = 'r4999'`)
+    expect(snapshot(db).sessions[0].lastAt).toBe(base - 1000)
     expectConsistent(db)
   })
 

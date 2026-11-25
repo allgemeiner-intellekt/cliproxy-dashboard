@@ -26,4 +26,4 @@ CREATE TABLE `usage_sessions` (
 );
 --> statement-breakpoint
 CREATE INDEX `usage_sessions_last_at` ON `usage_sessions` (`last_at`);--> statement-breakpoint
-CREATE INDEX `requests_session` ON `requests` (`session_id`);
+CREATE INDEX `requests_session` ON `requests` (`session_id`,`provider`,`model`,`tool`,`occurred_at`);

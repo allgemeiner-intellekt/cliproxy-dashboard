@@ -63,10 +63,18 @@ describe('pruneBackups', () => {
       openDb(path)
       const out = join(dir, 'b')
       for (let i = 0; i < 4; i++) backupDatabase(path, out, new Date(Date.UTC(2026, 0, 1 + i)))
-      Bun.write(join(out, 'notes.txt'), 'keep me')
+      for (const other of ['notes.txt', 'usage-2025-archive.db', 'usage-projection.db']) Bun.write(join(out, other), 'keep me')
+      require('node:fs').mkdirSync(join(out, 'usage-20250101T000000000Z-abcdef12.db'))
       const removed = pruneBackups(out, 2)
       expect(removed.map((f) => f.slice(0, 24))).toEqual(['usage-20260101T000000000', 'usage-20260102T000000000'])
-      expect(readdirSync(out).sort().map((f) => f.slice(0, 24))).toEqual(['notes.txt', 'usage-20260103T000000000', 'usage-20260104T000000000'])
+      expect(readdirSync(out).sort().map((f) => (f.startsWith('usage-2026') ? f.slice(0, 24) : f))).toEqual([
+        'notes.txt',
+        'usage-2025-archive.db',
+        'usage-20250101T000000000Z-abcdef12.db', // a directory, not a backup
+        'usage-20260103T000000000',
+        'usage-20260104T000000000',
+        'usage-projection.db',
+      ])
     }))
 })
 

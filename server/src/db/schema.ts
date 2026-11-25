@@ -61,8 +61,8 @@ export const requests = sqliteTable(
     index('requests_source').on(t.source, t.occurredAt),
     index('requests_client_key').on(t.clientKeyHash),
     index('requests_client_ip').on(t.clientIp),
-    // Recomputing a session's last request when rows are deleted (db/rollup.ts).
-    index('requests_session').on(t.sessionId),
+    // A session's newest request, when its latest is deleted (db/rollup.ts).
+    index('requests_session').on(t.sessionId, t.provider, t.model, t.tool, t.occurredAt),
     // Rows still waiting for a price, by model, so repricing skips the rest.
     index('requests_unpriced')
       .on(t.model)
@@ -76,8 +76,8 @@ export const requests = sqliteTable(
 //
 // Kept exact by triggers on `requests` (insert, update, delete) that live in
 // db/rollup.ts, not here: drizzle schemas can't declare triggers. Nullable
-// grouping columns store NULL as a NUL character (NULL_KEY in rollup.ts), so
-// they can be part of the key and a real '' keeps its meaning.
+// grouping columns are encoded (NULL as 'n', text x as 'v' || x; see
+// rollup.ts) so they can be part of the key without conflating values.
 export const usageRollup = sqliteTable(
   'usage_rollup',
   {

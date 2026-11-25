@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { openDb } from '../db/client'
-import { requests } from '../db/schema'
+import { machineIdentities, machines, requests } from '../db/schema'
 import { usageSummary } from './summary'
 
 const now = Date.UTC(2026, 9, 14, 12, 30)
@@ -225,5 +225,28 @@ describe('DST change buckets and unsupported offsets', () => {
   test("a stored '' account stays '' rather than 'unknown'", () => {
     const db = fixture([{ accountLabel: '' }, { accountLabel: null }])
     expect(usageSummary(db, '24h', 'UTC', now).byAccount.map((a) => a.name).sort()).toEqual(['', 'unknown'])
+  })
+})
+
+describe('encoded keys and transactions', () => {
+  test("a NUL-character account is not merged into 'unknown'", () => {
+    const db = fixture([{ accountLabel: '\u0000' }, { accountLabel: null }])
+    expect(usageSummary(db, '24h', 'UTC', now).byAccount.map((a) => a.name).sort()).toEqual(['\u0000', 'unknown'])
+  })
+
+  test('a machine identity never matches requests without a key or IP', () => {
+    const db = fixture([{ clientIp: null, clientKeyHash: null }])
+    db.insert(machines).values({ id: 1, name: 'ghost', createdAt: new Date() }).run()
+    db.insert(machineIdentities).values([{ kind: 'ip', value: 'n', machineId: 1 }, { kind: 'key', value: '\u0000', machineId: 1 }]).run()
+    expect(usageSummary(db, '24h', 'UTC', now).byMachine.map((m) => m.name)).toEqual(['unknown'])
+  })
+
+  test("a summary inside a caller's transaction isn't cached past a rollback", () => {
+    const db = openDb(':memory:')
+    db.$client.exec('BEGIN')
+    db.insert(requests).values({ id: 'tmp', source: 'cliproxy', occurredAt: new Date(now - 5000), receivedAt: new Date(now), provider: 'codex', model: 'gpt-6.1-sol', failed: false }).run()
+    expect(usageSummary(db, '24h', 'UTC', now).totals.records).toBe(1)
+    db.$client.exec('ROLLBACK')
+    expect(usageSummary(db, '24h', 'UTC', now).totals.records).toBe(0)
   })
 })

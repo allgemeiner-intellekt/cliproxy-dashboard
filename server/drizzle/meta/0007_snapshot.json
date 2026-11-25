@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "93a0ad3f-a9a6-4aad-a4c9-6e753b4542b5",
+  "id": "58a61ff8-c785-46df-ba99-a30b05c76e61",
   "prevId": "8a40f99c-80b9-402e-a0f7-1718d52d643f",
   "tables": {
     "machine_identities": {
@@ -322,7 +322,11 @@
         "requests_session": {
           "name": "requests_session",
           "columns": [
-            "session_id"
+            "session_id",
+            "provider",
+            "model",
+            "tool",
+            "occurred_at"
           ],
           "isUnique": false
         },

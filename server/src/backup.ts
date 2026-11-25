@@ -16,6 +16,8 @@ import { storageEnv } from './env'
 
 const PREFIX = 'usage-'
 const SUFFIX = '.db'
+// Exactly what backupDatabase() names its files; pruning touches nothing else.
+const BACKUP_NAME = /^usage-\d{8}T\d{9}Z-[0-9a-f]{8}\.db$/
 
 // Snapshot of `dbPath` as `<dir>/usage-<UTC timestamp>-<random>.db`; returns its path.
 export function backupDatabase(dbPath: string, dir: string, now = new Date()): string {
@@ -56,8 +58,9 @@ export function backupDatabase(dbPath: string, dir: string, now = new Date()): s
 
 // Deletes all but the newest `keep` backups in `dir`; returns what it removed.
 export function pruneBackups(dir: string, keep: number): string[] {
-  const backups = readdirSync(dir)
-    .filter((f) => f.startsWith(PREFIX) && f.endsWith(SUFFIX))
+  const backups = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && BACKUP_NAME.test(e.name))
+    .map((e) => e.name)
     .sort() // timestamps sort chronologically
   const old = backups.slice(0, Math.max(0, backups.length - keep))
   for (const f of old) rmSync(join(dir, f))
