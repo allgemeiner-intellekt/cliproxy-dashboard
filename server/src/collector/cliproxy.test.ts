@@ -664,7 +664,8 @@ describe('T3: live delivery and reconnection', () => {
     const proxy = await fakeProxy()
     const { db, collector } = collectorFor(proxy.port)
     collector.start()
-    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected)
+    // Let the initial (empty) drain finish so its pops aren't mistaken for the reconnect's.
+    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected && proxy.events.includes('lpop'))
     proxy.publish(makeRecord('before'))
     await waitFor(() => collector.status.stored === 1)
 

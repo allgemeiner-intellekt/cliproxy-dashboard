@@ -93,6 +93,41 @@ describe('importTranscripts', () => {
     }
   })
 
+  const codexLines = (events: { at: string; usage: Record<string, number>; total: Record<string, number> }[]) => [
+    JSON.stringify({ type: 'session_meta', timestamp: '2025-06-01T00:00:00Z', payload: { id: 'S' } }),
+    JSON.stringify({ type: 'turn_context', timestamp: '2025-06-01T00:00:00Z', payload: { model: 'gpt-6.1-sol' } }),
+    ...events.map(({ at, usage, total }) =>
+      JSON.stringify({ type: 'event_msg', timestamp: at, payload: { type: 'token_count', info: { last_token_usage: usage, total_token_usage: total } } }),
+    ),
+  ]
+
+  test('a late Codex copy does not hide its eligible copy, in either file order', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const late = { at: '2025-06-01T12:00:04Z', usage, total: usage }
+    const early = { at: '2025-06-01T12:00:02Z', usage, total: usage }
+    for (const events of [[late, early], [early, late]]) {
+      const { db, prices } = setup()
+      liveRow(db, Date.UTC(2025, 5, 1, 12, 0, 3))
+      const result = importTranscripts(db, prices, [{ tool: 'codex', lines: codexLines(events) }], '127.0.0.1')
+      expect(result).toMatchObject({ imported: 1, afterCutoff: 1 })
+      const stored = db.select().from(requests).all().filter((r) => r.source === 'codex-log')
+      expect(stored.map((r) => r.occurredAt.getTime())).toEqual([Date.UTC(2025, 5, 1, 12, 0, 2)])
+    }
+  })
+
+  test('same-millisecond Codex requests: a legacy import gains only the missed one, and re-import is a no-op', () => {
+    const { db, prices } = setup()
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const at = '2025-06-01T12:00:02.123Z'
+    const first = { at, usage, total: { input_tokens: 5, output_tokens: 5 } }
+    const second = { at, usage, total: { input_tokens: 10, output_tokens: 10 } }
+    // What the old parser stored: only the first, under the plain key.
+    importTranscripts(db, prices, [{ tool: 'codex', lines: codexLines([first]) }], '127.0.0.1')
+    expect(importTranscripts(db, prices, [{ tool: 'codex', lines: codexLines([first, second]) }], '127.0.0.1')).toMatchObject({ imported: 1, alreadyImported: 1 })
+    expect(importTranscripts(db, prices, [{ tool: 'codex', lines: codexLines([first, second]) }], '127.0.0.1')).toMatchObject({ imported: 0, alreadyImported: 2 })
+    expect(db.select().from(requests).all()).toHaveLength(2)
+  })
+
   test('without live records the cutoff is now', () => {
     const { db, prices } = setup()
     const before = Date.now()

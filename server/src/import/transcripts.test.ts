@@ -140,6 +140,46 @@ describe('parseCodexLine', () => {
     expect(records[0].sessionId).toBe('FORK')
   })
 
+  test("a fork's copied burst with advancing totals doesn't swallow the fork's first request", () => {
+    const usage = { input_tokens: 4, output_tokens: 1 }
+    const records = run([
+      meta({ id: 'FORK', forked_from_id: 'PARENT' }, '2025-06-01T00:00:00.000Z'),
+      context('m'),
+      // Two copied parent requests: same per-request usage, advancing totals.
+      counted('2025-06-01T00:00:00.100Z', usage, { input_tokens: 4, output_tokens: 1 }),
+      counted('2025-06-01T00:00:00.900Z', usage, { input_tokens: 8, output_tokens: 2 }),
+      // The fork's own first request, 1.4s after the burst began.
+      counted('2025-06-01T00:00:01.500Z', { input_tokens: 9, output_tokens: 3 }, { input_tokens: 17, output_tokens: 5 }),
+    ])
+    expect(records.map((r) => r.uncached)).toEqual([9])
+  })
+
+  test('distinct requests sharing a millisecond and usage get distinct keys; the first keeps the plain key', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const at = '2025-06-01T12:00:02.123Z'
+    const records = run([
+      meta({ id: 'S' }),
+      context('m'),
+      counted(at, usage, { input_tokens: 5, output_tokens: 5 }),
+      counted(at, usage, { input_tokens: 10, output_tokens: 10 }),
+      counted(at, usage, { input_tokens: 15, output_tokens: 15 }),
+    ])
+    const plain = `S:${Date.parse(at)}:${JSON.stringify(usage)}`
+    expect(records.map((r) => r.key)).toEqual([plain, `${plain}#2`, `${plain}#3`])
+  })
+
+  test('events after the cutoff are returned but claim no dedup state', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const state = newCodexState(Date.parse('2025-06-01T12:00:03Z'))
+    const parse = (l: string) => parseCodexLine(l, state)
+    parse(context('m'))
+    // A late copy first, then its eligible copy (same total).
+    const late = parse(counted('2025-06-01T12:00:04Z', usage, { input_tokens: 5, output_tokens: 5 }))
+    const early = parse(counted('2025-06-01T12:00:02Z', usage, { input_tokens: 5, output_tokens: 5 }))
+    expect(late?.timestampMs).toBe(Date.parse('2025-06-01T12:00:04Z'))
+    expect(early?.timestampMs).toBe(Date.parse('2025-06-01T12:00:02Z'))
+  })
+
   test('subagent rollouts are treated as forks too', () => {
     const records = run([
       meta({ id: 'SUB', source: { subagent: { thread_spawn: { parent_thread_id: 'P' } } } }),

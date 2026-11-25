@@ -78,19 +78,29 @@ const FORK_COPY_MAX_GAP_MS = 1000
 export type CodexState = {
   model: string
   sessionId: string
-  lastSignature: string | null
+  // Last cumulative total (or usage, for rollouts without totals): re-emit detection.
+  lastProgress: string | null
+  // Last per-request usage: fork copy detection, as before totals were used.
+  lastUsage: string | null
   sawSessionMeta: boolean
   suppressingForkCopies: boolean
   forkAnchorMs: number
+  // Events at or after this aren't imported; they mustn't claim dedup state.
+  cutoffMs: number
+  // Keys already given out, so distinct events that collide get a suffix.
+  keys: Map<string, number>
 }
 
-export const newCodexState = (): CodexState => ({
+export const newCodexState = (cutoffMs = Infinity): CodexState => ({
   model: '',
   sessionId: '',
-  lastSignature: null,
+  lastProgress: null,
+  lastUsage: null,
   sawSessionMeta: false,
   suppressingForkCopies: false,
   forkAnchorMs: 0,
+  cutoffMs,
+  keys: new Map(),
 })
 
 function isFork(meta: Record<string, unknown>) {
@@ -137,15 +147,20 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
   // usage advance it. Older rollouts without a total fall back to the usage.
   const total = obj(info?.total_token_usage)
   const progress = total ? `total:${JSON.stringify(total)}` : signature
-  // A record with a bad clock is returned for the importer to count and
-  // reject, but must not touch dedup or fork state: it would hide the valid
-  // copy that follows.
-  if (isPlausibleTimestamp(timestampMs)) {
+  // A record the importer will skip (bad clock, or after the live-collection
+  // cutoff) is returned for it to count, but must not touch dedup or fork
+  // state: that would hide an eligible copy elsewhere in the file.
+  const eligible = isPlausibleTimestamp(timestampMs) && timestampMs < state.cutoffMs
+  if (eligible) {
     // Codex re-emits unchanged token_count events on some stream boundaries.
-    if (progress === state.lastSignature) return null
-    state.lastSignature = progress
+    if (progress === state.lastProgress) return null
+    const sameUsage = signature === state.lastUsage
+    state.lastProgress = progress
+    state.lastUsage = signature
 
     if (state.suppressingForkCopies) {
+      // A copy repeating the previous usage doesn't extend the copied burst.
+      if (sameUsage) return null
       if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {
         state.forkAnchorMs = timestampMs
         return null
@@ -161,6 +176,15 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
   const uncached = Math.max(0, input - cacheRead - cacheWrite) // Codex input includes cached
   if (uncached + cacheRead + cacheWrite + output === 0) return null
 
+  // Distinct requests can share a millisecond and usage. The first keeps the
+  // plain key (as earlier imports stored it); later ones get "#2", "#3"...
+  let key = `${state.sessionId}:${timestampMs}:${signature}`
+  if (eligible) {
+    const seen = (state.keys.get(key) ?? 0) + 1
+    state.keys.set(key, seen)
+    if (seen > 1) key = `${key}#${seen}`
+  }
+
   return {
     tool: 'codex',
     timestampMs,
@@ -171,6 +195,6 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
     cacheWrite,
     output,
     reasoning: Math.min(output, int(last.reasoning_output_tokens)),
-    key: `${state.sessionId}:${timestampMs}:${signature}`,
+    key,
   }
 }
