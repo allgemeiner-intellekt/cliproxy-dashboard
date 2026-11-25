@@ -50,6 +50,6 @@ const files = SOURCES.flatMap(({ tool, dir }) => {
 const result = importTranscripts(db, prices, files, '127.0.0.1')
 console.log(
   `Imported ${result.imported} requests from ${files.length} files` +
-    ` (${result.alreadyImported} already imported, ${result.afterCutoff} after live collection began ${new Date(result.cutoffMs).toLocaleString()}).`,
+    ` (${result.alreadyImported} already imported, ${result.afterCutoff} after live collection began ${new Date(result.cutoffMs).toLocaleString()}, ${result.invalidTimestamp} with invalid timestamps).`,
 )
 process.exit(0)

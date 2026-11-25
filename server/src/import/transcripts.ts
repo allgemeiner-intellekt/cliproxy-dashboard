@@ -4,6 +4,8 @@
 // Ported from T3 Code (MIT, (c) 2026 T3 Tools Inc.),
 // apps/server/src/usage/usageTranscripts.ts, trimmed to what we store.
 
+import { isPlausibleTimestamp } from '../usage/timestamps'
+
 export type TranscriptRecord = {
   tool: 'claude-code' | 'codex'
   timestampMs: number
@@ -19,7 +21,12 @@ export type TranscriptRecord = {
 }
 
 const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
-const timestampOf = (v: unknown) => (typeof v === 'string' ? Date.parse(v) || null : null)
+// Parsed milliseconds, or null if unparseable. 0 (the epoch) is kept so the
+// importer can count it as out of range.
+const timestampOf = (v: unknown) => {
+  const ms = typeof v === 'string' ? Date.parse(v) : NaN
+  return Number.isFinite(ms) ? ms : null
+}
 const obj = (v: unknown) => (typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null)
 
 function parseJson(line: string) {
@@ -104,7 +111,9 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
     const id = payload.id ?? payload.session_id
     if (typeof id === 'string') state.sessionId = id
     const at = timestampOf(record.timestamp)
-    if (at !== null && isFork(payload)) {
+    // A fork with a bad clock has no usable anchor; suppressing against it
+    // would silently drop the fork's own usage, so import everything instead.
+    if (at !== null && isPlausibleTimestamp(at) && isFork(payload)) {
       state.suppressingForkCopies = true
       state.forkAnchorMs = at
     }
@@ -121,17 +130,22 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
   const timestampMs = timestampOf(record.timestamp)
   if (!last || timestampMs === null || !state.model) return null
 
-  // Codex re-emits unchanged token_count events on some stream boundaries.
   const signature = JSON.stringify(last)
-  if (signature === state.lastSignature) return null
-  state.lastSignature = signature
+  // A record with a bad clock is returned for the importer to count and
+  // reject, but must not touch dedup or fork state: it would hide the valid
+  // copy that follows.
+  if (isPlausibleTimestamp(timestampMs)) {
+    // Codex re-emits unchanged token_count events on some stream boundaries.
+    if (signature === state.lastSignature) return null
+    state.lastSignature = signature
 
-  if (state.suppressingForkCopies) {
-    if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {
-      state.forkAnchorMs = timestampMs
-      return null
+    if (state.suppressingForkCopies) {
+      if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {
+        state.forkAnchorMs = timestampMs
+        return null
+      }
+      state.suppressingForkCopies = false
     }
-    state.suppressingForkCopies = false
   }
 
   const input = int(last.input_tokens)
