@@ -127,7 +127,7 @@ npm run dev           # Vite on 127.0.0.1:5173, proxying /api to the server
 | `npm run lint` | oxlint; warnings fail the run |
 | `npm run server:check` | Type-check the server |
 | `npm run build` | Type-check the frontend and its tests, and build into `dist/` |
-| `bun test` | Server and frontend tests (frontend ones run in happy-dom, see `bunfig.toml`) |
+| `npm test` | Server tests, then frontend tests (happy-dom) in a separate Bun process |
 | `npm run db:generate` | Generate a migration after editing `server/src/db/schema.ts` |
 
 ### Importing earlier history

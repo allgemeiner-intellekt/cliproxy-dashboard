@@ -58,14 +58,16 @@ describe('labels', () => {
 })
 
 describe('chart keyboard', () => {
-  test('arrows step and clamp, Home/End jump, Escape lets go', () => {
+  test('arrows step and clamp, Page keys jump a tenth, Home/End go to the ends', () => {
     expect(chartKeyTarget('ArrowLeft', 3, 10)).toBe(2)
     expect(chartKeyTarget('ArrowLeft', 0, 10)).toBe(0)
     expect(chartKeyTarget('ArrowRight', 9, 10)).toBe(9)
     expect(chartKeyTarget('ArrowUp', 4, 10)).toBe(5)
     expect(chartKeyTarget('Home', 4, 10)).toBe(0)
     expect(chartKeyTarget('End', 4, 10)).toBe(9)
-    expect(chartKeyTarget('Escape', 4, 10)).toBeNull()
+    expect(chartKeyTarget('PageUp', 4, 100)).toBe(14)
+    expect(chartKeyTarget('PageDown', 4, 100)).toBe(0)
+    expect(chartKeyTarget('PageUp', 0, 3)).toBe(1)
     expect(chartKeyTarget('Tab', 4, 10)).toBeUndefined()
   })
 

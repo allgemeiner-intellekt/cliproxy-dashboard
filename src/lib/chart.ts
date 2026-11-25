@@ -51,9 +51,10 @@ export function bucketLabel(key: number | string, long = false) {
 // "Mon" for a local day key ("YYYY-MM-DD").
 export const weekdayLabel = (day: string) => weekdayFmt.format(new Date(`${day}T00:00:00Z`))
 
-// The bucket a key moves the chart's keyboard cursor to: undefined for keys the
-// chart doesn't handle, null to let go (Escape).
-export function chartKeyTarget(key: string, at: number, count: number): number | null | undefined {
+// The bucket a key moves the chart's keyboard cursor to, or undefined for keys
+// the chart doesn't handle. Matches the slider keyboard pattern.
+export function chartKeyTarget(key: string, at: number, count: number): number | undefined {
+  const page = Math.max(1, Math.round(count / 10))
   switch (key) {
     case 'ArrowLeft':
     case 'ArrowDown':
@@ -61,12 +62,14 @@ export function chartKeyTarget(key: string, at: number, count: number): number |
     case 'ArrowRight':
     case 'ArrowUp':
       return Math.min(count - 1, at + 1)
+    case 'PageDown':
+      return Math.max(0, at - page)
+    case 'PageUp':
+      return Math.min(count - 1, at + page)
     case 'Home':
       return 0
     case 'End':
       return count - 1
-    case 'Escape':
-      return null
     default:
       return undefined
   }

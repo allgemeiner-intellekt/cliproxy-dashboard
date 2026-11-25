@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint --deny-warnings",
+    "test": "bun test ./server && bun test ./src",
     "preview": "vite preview",
     "server": "bun server/src/index.ts",
     "server:check": "tsc -p server/tsconfig.json",

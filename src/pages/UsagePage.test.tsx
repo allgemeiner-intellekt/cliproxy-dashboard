@@ -1,3 +1,4 @@
+import '../test/dom'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { json, summary } from '../test/fixtures'
@@ -6,15 +7,19 @@ import { UsagePage } from './UsagePage'
 // /api/usage requests wait here until the test answers them.
 type Pending = { range: string; signal?: AbortSignal; answered?: boolean; answer: (res: Response) => void }
 let pending: Pending[] = []
+// Ranges whose requests act like a server that answers anyway after the
+// client gave up, so the page's own stale-response guard is what's tested.
+let ignoreAbort = new Set<string>()
 const realFetch = globalThis.fetch
 
 beforeEach(() => {
   localStorage.clear()
   pending = []
+  ignoreAbort = new Set()
   globalThis.fetch = ((url: string, init?: RequestInit) =>
     new Promise<Response>((resolve, reject) => {
       const range = new URL(String(url), 'http://localhost').searchParams.get('range') ?? ''
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+      if (!ignoreAbort.has(range)) init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
       pending.push({ range, signal: init?.signal ?? undefined, answer: resolve })
     })) as typeof fetch
 })
@@ -48,13 +53,16 @@ describe('UsagePage', () => {
   })
 
   test('U5: a slow response for an earlier range never replaces the newer one', async () => {
+    ignoreAbort.add('all')
     const { ui, rangeButton } = setup()
     await answer('30d', json(summary('30d', 1_000_000)))
 
     fireEvent.click(rangeButton('All time'))
     fireEvent.click(rangeButton('24 hours'))
     await answer('24h', json(summary('24h', 2_000_000)))
-    // The earlier request was aborted; even if it answered late, it's ignored.
+    expect(ui.getAllByText('$2.00').length).toBeGreaterThan(0)
+
+    // The earlier request was aborted, but its response still arrives, last.
     const late = pending.find((p) => p.range === 'all')!
     expect(late.signal?.aborted).toBe(true)
     await act(async () => late.answer(json(summary('all', 9_000_000))))

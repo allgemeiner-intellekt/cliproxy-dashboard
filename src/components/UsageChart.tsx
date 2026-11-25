@@ -77,10 +77,10 @@ function dayStarts(summary: UsageSummary) {
 
 export function UsageChart({ summary, metric, by }: { summary: UsageSummary; metric: Metric; by: ChartGroup }) {
   const [ref, width] = useWidth<HTMLDivElement>()
-  const [hover, setHover] = useState<number | null>(null)
-  // Set while the hovered bucket was picked with the keyboard, so only those
-  // moves are announced (pointer moves would flood a screen reader).
-  const [keyboard, setKeyboard] = useState(false)
+  // The bucket under the pointer, and the one picked with the keyboard while
+  // the chart has focus. They're separate so neither one moves the other.
+  const [pointer, setPointer] = useState<number | null>(null)
+  const [picked, setPicked] = useState<number | null>(null)
 
   const valueOf = (p?: { costMicros: number; tokens: number }) => (p ? (metric === 'cost' ? p.costMicros : p.tokens) : 0)
   const format = (v: number) => (metric === 'cost' ? formatUsd(v) : formatTokens(v))
@@ -102,27 +102,29 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const left = e.clientX - e.currentTarget.getBoundingClientRect().left - AXIS_W
     const i = Math.round((left / plotW) * (count - 1))
-    setKeyboard(false)
-    setHover(i >= 0 && i < count ? i : null)
+    setPointer(i >= 0 && i < count ? i : null)
   }
 
-  // Arrow keys step through the buckets; Home and End jump to either end.
+  // For the keyboard the plot is a slider over the buckets: arrow keys step,
+  // Home and End jump to either end, and the value text reads the bucket out.
+  // (A slider, not a plain group, so screen readers in browse mode pass the
+  // arrow keys through.) The range can shrink under focus, hence the clamp.
+  const selected = count ? Math.min(picked ?? count - 1, count - 1) : null
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!count) return
-    const at = hover ?? count - 1
-    const next = chartKeyTarget(e.key, at, count)
+    if (selected === null) return
+    const next = chartKeyTarget(e.key, selected, count)
     if (next === undefined) return
     e.preventDefault()
-    setKeyboard(next !== null)
-    setHover(next)
+    setPicked(next)
   }
 
-  const unit = summary.bucket === 'hour' ? 'hour' : 'day'
-  const chartLabel = `${metric === 'cost' ? 'Cost' : 'Tokens'} over time by ${by}`
+  const chartLabel = `${metric === 'cost' ? 'Cost' : 'Tokens'} by ${summary.bucket === 'hour' ? 'hour' : 'day'}, by ${by}`
 
   const days = summary.range === '7d' ? dayStarts(summary) : []
   // First, middle and last; fewer when there are only one or two buckets.
   const labels = [...new Set(count ? [0, Math.floor((count - 1) / 2), count - 1] : [])]
+  // The tooltip follows the pointer, else the keyboard pick while focused.
+  const hover = pointer ?? (picked === null ? null : selected)
   const hovered = hover === null ? null : summary.series[hover]
 
   return (
@@ -141,24 +143,24 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
       <div
         className="uchart-plot"
         ref={ref}
-        tabIndex={count ? 0 : undefined}
-        role="group"
-        aria-roledescription="chart"
-        aria-label={count ? `${chartLabel}. Use the arrow keys to read each ${unit}.` : chartLabel}
+        {...(selected === null
+          ? { role: 'img', 'aria-label': `${chartLabel}: no data` }
+          : {
+              tabIndex: 0,
+              role: 'slider',
+              'aria-label': chartLabel,
+              'aria-orientation': 'horizontal' as const,
+              'aria-valuemin': 1,
+              'aria-valuemax': count,
+              'aria-valuenow': selected + 1,
+              'aria-valuetext': describeBucket(bucketLabel(summary.series[selected].key, true), lines, selected, format),
+            })}
         onKeyDown={onKeyDown}
-        onFocus={() => {
-          if (hover === null && count) {
-            setKeyboard(true)
-            setHover(count - 1)
-          }
-        }}
-        onBlur={() => {
-          setKeyboard(false)
-          setHover(null)
-        }}
+        onFocus={() => setPicked(selected)}
+        onBlur={() => setPicked(null)}
       >
         {width > 0 && (
-          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => !keyboard && setHover(null)} aria-hidden>
+          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setPointer(null)} aria-hidden>
             <defs>
               {lines.map((l, i) => (
                 <pattern key={l.id} id={`dots-${by}-${i}`} width="3" height="3" patternUnits="userSpaceOnUse">
@@ -201,9 +203,6 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {hover !== null && <line className="crosshair" x1={x(hover)} x2={x(hover)} y1={PAD_TOP} y2={y(0)} />}
           </svg>
         )}
-        <div className="sr-only" aria-live="polite">
-          {keyboard && hovered && hover !== null ? describeBucket(bucketLabel(hovered.key, true), lines, hover, format) : ''}
-        </div>
         {hovered && hover !== null && (
           <div className="tooltip" aria-hidden style={{ left: Math.min(x(hover) + 12, width - 200) }}>
             <div className="tooltip-title">{bucketLabel(hovered.key, true)}</div>

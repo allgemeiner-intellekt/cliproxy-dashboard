@@ -508,7 +508,7 @@ export function UsagePage() {
 
       {/* A failed switch hides the previous range's numbers rather than leave them up. */}
       {summary && !(stale && failed) && (
-        <div className={stale ? 'ubody is-stale' : 'ubody'} aria-busy={busy}>
+        <div className={stale ? 'ubody is-stale' : 'ubody'}>
           <div className="utop">
             <Hero summary={summary} metric={prefs.metric} />
             <div>

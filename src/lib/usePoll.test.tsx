@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import '../test/dom'
+import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { usePoll } from './usePoll'
 
@@ -10,10 +11,14 @@ const setHidden = (value: boolean) =>
     document.dispatchEvent(new Event('visibilitychange'))
   })
 
+// A controlled clock, so interval counts don't depend on how busy the machine is.
+beforeEach(() => jest.useFakeTimers())
 afterEach(() => {
   cleanup()
+  jest.useRealTimers()
   hidden = false
 })
+const advance = (ms: number) => act(() => jest.advanceTimersByTime(ms))
 
 // A task that records each run's signal and never settles on its own.
 function recorder() {
@@ -25,18 +30,21 @@ function recorder() {
   return { signals, task }
 }
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 describe('usePoll', () => {
-  test('runs at once, then on every interval', async () => {
+  test('runs at once, then on every interval', () => {
     const { signals, task } = recorder()
     renderHook(() => usePoll(task, 30))
     expect(signals).toHaveLength(1)
-    await act(() => wait(150))
-    expect(signals.length).toBeGreaterThanOrEqual(3)
+    advance(29)
+    expect(signals).toHaveLength(1)
+    advance(1)
+    expect(signals).toHaveLength(2)
+    advance(60)
+    expect(signals).toHaveLength(4)
   })
 
-  test('a new run aborts the one before it', async () => {
+  test('a new run aborts the one before it', () => {
     const { signals, task } = recorder()
     const { result } = renderHook(() => usePoll(task, 10_000))
     act(() => result.current())
@@ -45,16 +53,20 @@ describe('usePoll', () => {
     expect(signals[1].aborted).toBe(false)
   })
 
-  test('pauses while hidden and runs again as soon as the tab is visible', async () => {
+  test('pauses while hidden and runs again as soon as the tab is visible', () => {
     const { signals, task } = recorder()
     renderHook(() => usePoll(task, 20))
     setHidden(true)
-    const before = signals.length
-    await act(() => wait(70))
-    expect(signals.length).toBe(before)
+    advance(200)
+    expect(signals).toHaveLength(1)
 
     setHidden(false)
-    expect(signals.length).toBe(before + 1)
+    expect(signals).toHaveLength(2)
+    // The timer restarts from the visible moment.
+    advance(19)
+    expect(signals).toHaveLength(2)
+    advance(1)
+    expect(signals).toHaveLength(3)
   })
 
   test('refresh() does nothing while hidden', () => {
@@ -74,13 +86,12 @@ describe('usePoll', () => {
     expect(b.signals).toHaveLength(1)
   })
 
-  test('unmounting aborts the run in flight and stops the timer', async () => {
+  test('unmounting aborts the run in flight and stops the timer', () => {
     const { signals, task } = recorder()
     const { unmount } = renderHook(() => usePoll(task, 20))
     unmount()
     expect(signals.at(-1)?.aborted).toBe(true)
-    const count = signals.length
-    await wait(60)
-    expect(signals.length).toBe(count)
+    advance(200)
+    expect(signals).toHaveLength(1)
   })
 })

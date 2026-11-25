@@ -1,3 +1,4 @@
+import '../test/dom'
 import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react'
 import { toast } from '../lib/toast'
