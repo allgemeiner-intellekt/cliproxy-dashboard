@@ -78,8 +78,10 @@ type Window = {
 }
 
 // The time zone's offset from UTC at an instant, in ms.
+const offsetFormats = new Map<string, Intl.DateTimeFormat>()
 function offsetMs(timeZone: string, ms: number) {
-  const parts = new Intl.DateTimeFormat('en-US', {
+  let format = offsetFormats.get(timeZone)
+  if (!format) offsetFormats.set(timeZone, (format = new Intl.DateTimeFormat('en-US', {
     timeZone,
     hourCycle: 'h23',
     year: 'numeric',
@@ -88,24 +90,35 @@ function offsetMs(timeZone: string, ms: number) {
     hour: 'numeric',
     minute: 'numeric',
     second: 'numeric',
-  }).formatToParts(ms)
+  })))
+  const parts = format.formatToParts(ms)
   const n = (type: string) => Number(parts.find((p) => p.type === type)?.value)
   return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - Math.floor(ms / 1000) * 1000
 }
 
-// Buckets of local hours: in a +05:30 zone they start at :30 past each UTC hour.
+// Buckets of local hours: in a +05:30 zone they start at :30 past each UTC
+// hour. Each instant is aligned with its own offset, so a DST change that
+// moves the phase (Lord Howe shifts by 30 minutes) just makes one bucket
+// shorter or longer instead of shifting the whole window.
 function hourWindow(startMs: number, now: number, timeZone: string): Window {
-  // Local hours start where UTC + offset is a whole hour, i.e. at -offset mod 1h.
-  const phase = (((-offsetMs(timeZone, now) % HOUR) + HOUR) % HOUR) as number
-  const hourOf = (ms: number) => Math.floor((ms - phase) / HOUR) * HOUR + phase
-  const first = hourOf(startMs)
-  const hours = (hourOf(now) - first) / HOUR + 1
-  return {
-    startMs: first,
-    bucket: 'hour',
-    keys: Array.from({ length: hours }, (_, i) => first + i * HOUR),
-    keyOf: hourOf,
+  const memo = new Map<number, number>()
+  const hourOf = (ms: number) => {
+    const slot = Math.floor(ms / SLOT_MS) * SLOT_MS // offsets are whole slots
+    let hour = memo.get(slot)
+    if (hour === undefined) {
+      const local = slot + offsetMs(timeZone, slot)
+      hour = slot - (((local % HOUR) + HOUR) % HOUR)
+      memo.set(slot, hour)
+    }
+    return hour
   }
+  const first = hourOf(startMs)
+  const keys: number[] = []
+  for (let slot = first; slot <= now; slot += SLOT_MS) {
+    const key = hourOf(slot)
+    if (key !== keys[keys.length - 1]) keys.push(key)
+  }
+  return { startMs: first, bucket: 'hour', keys, keyOf: hourOf }
 }
 
 function windowFor(range: Range, timeZone: string, now: number, earliestMs: number | null): Window {

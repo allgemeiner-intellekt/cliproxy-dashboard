@@ -181,3 +181,24 @@ describe('summary cache (P4)', () => {
     expect(usageSummary(db, '24h', 'UTC', now + 2 * 3600e3)).not.toBe(first)
   })
 })
+
+describe('fractional DST changes (Lord Howe, +10:30 ↔ +11:00)', () => {
+  test("a 7d window across the change starts at the first day's local midnight", () => {
+    // DST began 2026-10-04 02:00 local (+10:30 → +11:00).
+    const now = Date.UTC(2026, 9, 6, 1) // 2026-10-06 12:00 local (+11:00)
+    // 7d starts 2026-09-30 00:00 local (+10:30) = 2026-09-29T13:30Z.
+    const start = Date.UTC(2026, 8, 29, 13, 30)
+    const db = fixture([
+      { id: 'before', occurredAt: new Date(start - 10 * 60e3) }, // 23:50 local the day before
+      { id: 'first', occurredAt: new Date(start + 10 * 60e3) },
+      { id: 'after', occurredAt: new Date(Date.UTC(2026, 9, 5, 2, 10)) }, // after the change
+    ])
+    const summary = usageSummary(db, '7d', 'Australia/Lord_Howe', now)
+    expect(summary.totals.records).toBe(2)
+    expect(summary.series[0].key).toBe(start)
+    // Buckets before the change start at :30 UTC, after it on the hour.
+    expect(new Date(summary.series[0].key as number).getUTCMinutes()).toBe(30)
+    expect(new Date(summary.series.at(-1)!.key as number).getUTCMinutes()).toBe(0)
+    expect(summary.series.reduce((n, s) => n + (s.providers.openai ? 1 : 0), 0)).toBe(2)
+  })
+})

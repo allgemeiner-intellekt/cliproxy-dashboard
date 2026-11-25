@@ -8,7 +8,7 @@
 // else.
 
 import { Database } from 'bun:sqlite'
-import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { storageEnv } from './env'
@@ -24,15 +24,22 @@ export function backupDatabase(dbPath: string, dir: string, now = new Date()): s
   const target = join(dir, `${PREFIX}${stamp}${SUFFIX}`)
   const tmp = `${target}.partial`
   rmSync(tmp, { force: true })
+  // Owner-only from the first byte: VACUUM INTO would create the file with
+  // the umask's mode, readable by others in a shared directory. It accepts an
+  // existing empty file.
+  closeSync(openSync(tmp, 'wx', 0o600))
+  chmodSync(tmp, 0o600) // in case the umask removed owner bits
 
   const db = new Database(dbPath, { readonly: true })
   try {
     db.exec('PRAGMA busy_timeout = 5000')
     db.query('VACUUM INTO ?').run(tmp)
+  } catch (err) {
+    rmSync(tmp, { force: true })
+    throw err
   } finally {
     db.close()
   }
-  chmodSync(tmp, 0o600)
   const check = new Database(tmp, { readonly: true })
   try {
     const result = (check.query('PRAGMA quick_check').get() as { quick_check: string }).quick_check

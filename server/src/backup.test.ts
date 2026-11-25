@@ -65,3 +65,20 @@ describe('pruneBackups', () => {
       expect(readdirSync(out).sort()).toEqual(['notes.txt', 'usage-20260103T000000000Z.db', 'usage-20260104T000000000Z.db'])
     }))
 })
+
+describe('backup file permissions', () => {
+  test('the partial file is owner-only even in a world-readable directory with umask 022', () =>
+    withDir((dir) => {
+      const path = join(dir, 'usage.db')
+      openDb(path)
+      const out = join(dir, 'shared')
+      require('node:fs').mkdirSync(out, { mode: 0o755 })
+      const old = process.umask(0o022)
+      try {
+        const backup = backupDatabase(path, out)
+        expect(statSync(backup).mode & 0o777).toBe(0o600)
+      } finally {
+        process.umask(old)
+      }
+    }))
+})
