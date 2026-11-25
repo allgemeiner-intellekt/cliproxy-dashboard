@@ -17,6 +17,7 @@ export type ServerEnv = StorageEnv & {
   proxyPort: number
   host: string
   port: number
+  allowedHosts: string[]
   staticDir: string
 }
 
@@ -65,6 +66,8 @@ export function parseServerEnv(source: Source): ServerEnv {
     // Dashboard listener.
     host: get('USAGE_SERVER_HOST') ?? '127.0.0.1',
     port,
+    // Extra Host names the API answers to (reverse proxies); see http/guard.ts.
+    allowedHosts: (get('USAGE_ALLOWED_HOSTS') ?? '').split(',').map((h) => h.trim()).filter(Boolean),
 
     // Built dashboard (`npm run build`); served when present.
     staticDir: get('DASHBOARD_DIST') ?? 'dist',

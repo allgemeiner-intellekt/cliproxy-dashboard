@@ -27,6 +27,6 @@ await prices.refresh()
 const result = importTranscripts(db, prices, files, values.ip)
 console.log(
   `Imported ${result.imported} requests from ${files.length} files as ${values.ip}` +
-    ` (${result.alreadyImported} already imported, ${result.afterCutoff} after live collection began).`,
+    ` (${result.alreadyImported} already imported, ${result.afterCutoff} after live collection began, ${result.invalidTimestamp} with invalid timestamps).`,
 )
 process.exit(0)

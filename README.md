@@ -66,6 +66,7 @@ All configuration is environment variables, read from `.env.local` in the workin
 | `CPA_TARGET` | `http://127.0.0.1:8317` | CLIProxyAPI base URL. Must be `http://`: the usage queue is read over a plaintext connection to this port. Without a port, `8317` is used |
 | `USAGE_SERVER_HOST` | `127.0.0.1` | Server listen address |
 | `USAGE_SERVER_PORT` | `5174` | Server listen port |
+| `USAGE_ALLOWED_HOSTS` | none | Extra `Host` names the API answers to, comma-separated (`.example.com` allows subdomains). IP addresses, `localhost`, this machine's name and `*.ts.net` are always allowed; add a reverse proxy's domain here |
 | `TAILSCALE_BIN` | auto | Path to the `tailscale` CLI, used to name machines by their tailnet name |
 | `USAGE_DB_PATH` | `data/usage.db` | SQLite database |
 | `PRICE_CACHE_PATH` | `data/litellm-prices.json` | Cached LiteLLM price table. The server prices from it at startup and downloads a fresh copy in the background |
@@ -95,6 +96,9 @@ docker run -d --name cliproxy-dashboard --restart unless-stopped \
 ## Security
 
 - **The dashboard has no login.** Anyone who can reach it can read usage and device data, rename machines (`PUT`/`DELETE /api/devices/name`), and import historical transcripts (`POST /api/import`). It binds to `127.0.0.1` by default; to reach it from elsewhere, use an SSH tunnel, `tailscale serve` with Tailnet ACLs, or a reverse proxy with its own authentication. Do not expose it directly to an untrusted network.
+- **Browser protections.** The API only answers requests whose `Host` is an IP address, `localhost`, this machine's name, a `*.ts.net` name or one listed in `USAGE_ALLOWED_HOSTS`, which blocks DNS-rebinding pages. Writes must be `Content-Type: application/json`, which other websites can't send without a CORS preflight that the server never grants. These keep other websites out; they don't replace a login.
+- **Behind a reverse proxy**, the check only sees the `Host` the proxy forwards. Forward the browser's original `Host` (nginx: `proxy_set_header Host $host;`) and list it in `USAGE_ALLOWED_HOSTS`, or make the proxy reject requests for names it doesn't serve (no catch-all default server forwarding here). A proxy that rewrites `Host` to `127.0.0.1` for every name lets a rebinding page through.
+- `data/usage.db` and its WAL files are created readable by their owner only (`0600`), and existing ones are tightened at startup.
 - `CPA_MANAGEMENT_KEY` stays server-side and is used only to authenticate the usage Pub/Sub subscription; no CLIProxyAPI management endpoints are proxied.
 
 ## Limitations
