@@ -75,13 +75,23 @@
   margin-bottom: var(--space-6);
 }
 
-.ubody {
+.useries {
   transition: opacity 0.15s;
 }
 
-/* Shown while another range loads, so old numbers don't pass for new ones. */
-.ubody.is-stale {
-  opacity: 0.45;
+/* While another range loads, the notice says the numbers are the previous
+   range's. Only the chart's series fade; text keeps its contrast. */
+.ustale {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-5);
+  color: var(--fg-2);
+  font-size: var(--text-md);
+}
+
+.ubody.is-stale .useries {
+  opacity: 0.35;
 }
 
 .skel {

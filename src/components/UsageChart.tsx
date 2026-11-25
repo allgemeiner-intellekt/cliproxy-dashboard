@@ -78,9 +78,12 @@ function dayStarts(summary: UsageSummary) {
 export function UsageChart({ summary, metric, by }: { summary: UsageSummary; metric: Metric; by: ChartGroup }) {
   const [ref, width] = useWidth<HTMLDivElement>()
   // The bucket under the pointer, and the one picked with the keyboard while
-  // the chart has focus. They're separate so neither one moves the other.
+  // the chart has focus (by key, so it stays on the same hour or day when a
+  // poll shifts the window). Whichever was used last drives the tooltip.
   const [pointer, setPointer] = useState<number | null>(null)
-  const [picked, setPicked] = useState<number | null>(null)
+  const [pickedKey, setPickedKey] = useState<number | string | null>(null)
+  const [lastInput, setLastInput] = useState<'pointer' | 'keyboard'>('pointer')
+  const [dismissed, setDismissed] = useState(false) // Escape hid the tooltip
 
   const valueOf = (p?: { costMicros: number; tokens: number }) => (p ? (metric === 'cost' ? p.costMicros : p.tokens) : 0)
   const format = (v: number) => (metric === 'cost' ? formatUsd(v) : formatTokens(v))
@@ -103,19 +106,36 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
     const left = e.clientX - e.currentTarget.getBoundingClientRect().left - AXIS_W
     const i = Math.round((left / plotW) * (count - 1))
     setPointer(i >= 0 && i < count ? i : null)
+    setLastInput('pointer')
+    setDismissed(false)
   }
 
   // For the keyboard the plot is a slider over the buckets: arrow keys step,
   // Home and End jump to either end, and the value text reads the bucket out.
   // (A slider, not a plain group, so screen readers in browse mode pass the
-  // arrow keys through.) The range can shrink under focus, hence the clamp.
-  const selected = count ? Math.min(picked ?? count - 1, count - 1) : null
+  // arrow keys through.) Escape hides the tooltip and keeps the value.
+  const empty = count === 0 || summary.totals.records === 0
+  const pickedIndex = pickedKey === null ? -1 : summary.series.findIndex((b) => b.key === pickedKey)
+  // A picked bucket that has left the window falls back to the latest one.
+  const selected = empty ? null : pickedIndex >= 0 ? pickedIndex : count - 1
+  const pick = (i: number) => {
+    setPickedKey(summary.series[i].key)
+    setLastInput('keyboard')
+    setDismissed(false)
+  }
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (selected === null) return
+    if (e.key === 'Escape') {
+      if (hover !== null) {
+        e.preventDefault()
+        setDismissed(true)
+      }
+      return
+    }
     const next = chartKeyTarget(e.key, selected, count)
     if (next === undefined) return
     e.preventDefault()
-    setPicked(next)
+    pick(next)
   }
 
   const chartLabel = `${metric === 'cost' ? 'Cost' : 'Tokens'} by ${summary.bucket === 'hour' ? 'hour' : 'day'}, by ${by}`
@@ -123,8 +143,11 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
   const days = summary.range === '7d' ? dayStarts(summary) : []
   // First, middle and last; fewer when there are only one or two buckets.
   const labels = [...new Set(count ? [0, Math.floor((count - 1) / 2), count - 1] : [])]
-  // The tooltip follows the pointer, else the keyboard pick while focused.
-  const hover = pointer ?? (picked === null ? null : selected)
+  // The tooltip shows the input used last: the keyboard pick (set by keyboard
+  // focus or keys) or the pointer.
+  // When the pointer leaves, a keyboard pick on the focused chart shows again.
+  const keyboardHover = pickedKey !== null ? selected : null
+  const hover = dismissed ? null : lastInput === 'keyboard' ? keyboardHover : (pointer ?? keyboardHover)
   const hovered = hover === null ? null : summary.series[hover]
 
   return (
@@ -144,7 +167,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
         className="uchart-plot"
         ref={ref}
         {...(selected === null
-          ? { role: 'img', 'aria-label': `${chartLabel}: no data` }
+          ? { role: 'img', 'aria-label': `${chartLabel}: no usage in this window` }
           : {
               tabIndex: 0,
               role: 'slider',
@@ -156,8 +179,15 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
               'aria-valuetext': describeBucket(bucketLabel(summary.series[selected].key, true), lines, selected, format),
             })}
         onKeyDown={onKeyDown}
-        onFocus={() => setPicked(selected)}
-        onBlur={() => setPicked(null)}
+        onFocus={(e) => {
+          // Keyboard focus starts on the latest bucket. A mouse click only
+          // focuses; it doesn't pin a tooltip the user never asked for.
+          if (selected !== null && e.currentTarget.matches(':focus-visible')) pick(selected)
+        }}
+        onBlur={() => {
+          setPickedKey(null)
+          setDismissed(false)
+        }}
       >
         {width > 0 && (
           <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setPointer(null)} aria-hidden>
@@ -181,6 +211,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {painted.map((l) => (
               <path
                 key={`fill-${l.id}`}
+                className="useries"
                 d={`${monotonePath(l.values.map((v, i) => [x(i), y(v)]))}L${x(count - 1)},${y(0)}L${x(0)},${y(0)}Z`}
                 fill={`url(#dots-${by}-${lines.indexOf(l)})`}
               />
@@ -188,6 +219,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {painted.map((l) => (
               <path
                 key={`line-${l.id}`}
+                className="useries"
                 d={monotonePath(l.values.map((v, i) => [x(i), y(v)]))}
                 fill="none"
                 stroke={l.color}

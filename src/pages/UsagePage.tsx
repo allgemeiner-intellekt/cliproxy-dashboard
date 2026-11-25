@@ -39,6 +39,7 @@ const RANGE_OPTIONS: [Range, string][] = [
   ['90d', '90 days'],
   ['all', 'All time'],
 ]
+const rangeLabel = (range: Range) => RANGE_OPTIONS.find(([r]) => r === range)?.[1].toLowerCase() ?? range
 const PREFS_KEY = 'cpa:usage-prefs'
 
 type Prefs = { range: Range; metric: Metric; breakdown: BreakdownKind; chartBy: ChartGroup }
@@ -474,9 +475,10 @@ export function UsagePage() {
             </option>
           ))}
         </select>
-        {/* Any refresh, including polls and the one on returning to the tab. */}
+        {/* Any refresh, including polls and the one on returning to the tab;
+            a range switch has its own, more specific notice below. */}
         <span className="uloading" role="status">
-          {summary && busy && (
+          {summary && busy && !stale && (
             <>
               <LoaderCircle size={14} className="spin" aria-hidden />
               <span className="sr-only">Loading</span>
@@ -505,6 +507,14 @@ export function UsagePage() {
       )}
 
       {!summary && !failed && <UsageSkeleton />}
+
+      {/* Says in words that the numbers below are for the previous range. */}
+      {data && stale && !failed && (
+        <p className="ustale" role="status">
+          <LoaderCircle size={14} className="spin" aria-hidden />
+          Loading {rangeLabel(prefs.range)}. Still showing {rangeLabel(data.range)}.
+        </p>
+      )}
 
       {/* A failed switch hides the previous range's numbers rather than leave them up. */}
       {summary && !(stale && failed) && (

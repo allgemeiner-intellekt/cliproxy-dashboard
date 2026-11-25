@@ -72,13 +72,15 @@ describe('UsagePage', () => {
     expect(ui.getByText('Hourly cost')).toBeTruthy()
   })
 
-  test('U6: old numbers are dimmed while another range loads', async () => {
+  test('U6: old numbers are marked stale while another range loads', async () => {
     const { container, rangeButton } = setup()
     await answer('30d', json(summary('30d')))
     fireEvent.click(rangeButton('7 days'))
     expect(container.querySelector('.ubody')?.className).toContain('is-stale')
+    expect(container.querySelector('.ustale')?.textContent).toBe('Loading 7 days. Still showing 30 days.')
     await answer('7d', json(summary('7d')))
     expect(container.querySelector('.ubody')?.className).not.toContain('is-stale')
+    expect(container.querySelector('.ustale')).toBeNull()
   })
 
   test('a failed load shows the error with Retry, which recovers', async () => {
