@@ -1,13 +1,10 @@
-// API-equivalent pricing from LiteLLM's public price table, with manual
-// overrides from the database taking precedence.
+// API-equivalent pricing from LiteLLM's public price table.
 //
 // Subscription accounts aren't billed per token; this answers "what would
 // this usage have cost on the pay-as-you-go API".
 
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { Db } from '../db/client'
-import { priceOverrides } from '../db/schema'
 
 const PRICE_TABLE_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const REFRESH_EVERY_MS = 24 * 3600e3
@@ -17,11 +14,18 @@ const RETRY_AFTER_FAILURE_MS = 15 * 60e3
 const FETCH_TIMEOUT_MS = 30e3
 
 // Micro-dollars per million tokens.
-export type Rates = {
+type BaseRates = {
   input: number
   output: number
   cacheRead: number | null
   cacheWrite: number | null
+}
+
+export type Rates = BaseRates & {
+  // Long-context pricing: when a request's prompt (input + cache read + cache
+  // write) exceeds `aboveTokens`, every token is billed at the tier's rates.
+  // Ascending by threshold.
+  tiers?: { aboveTokens: number; rates: BaseRates }[]
 }
 
 export type Tokens = {
@@ -31,14 +35,15 @@ export type Tokens = {
   output: number | null
 }
 
+type RateField = (typeof RATE_FIELDS)[number]
+
 type LiteLlmEntry = {
   litellm_provider?: string
   mode?: string
-  input_cost_per_token?: number
-  output_cost_per_token?: number
-  cache_read_input_token_cost?: number
-  cache_creation_input_token_cost?: number
-}
+  // Long-context rates, e.g. input_cost_per_token_above_200k_tokens, keyed
+  // by threshold in tokens.
+  tiers?: Record<number, Partial<Record<RateField, number>>>
+} & Partial<Record<RateField, number>>
 
 // USD per token → micro-dollars per million tokens.
 const perMTok = (usdPerToken: number) => Math.round(usdPerToken * 1e12)
@@ -60,15 +65,21 @@ export function normalizeModel(model: string) {
   return model.trim().toLowerCase().replace(/\[.*$/, '')
 }
 
+type Priced = { rates: Rates; pricedAs: string }
+
 export class PriceBook {
   private table: Record<string, LiteLlmEntry> = {}
-  private overrides = new Map<string, Rates>()
+  // lookup() results by raw model name; a miss scans the whole table, and
+  // repricing or a busy collector asks for the same few models constantly.
+  private lookups = new Map<string, Priced | null>()
   loadedAt: number | null = null
 
-  constructor(
-    private db: Db,
-    private cachePath: string,
-  ) {}
+  constructor(private cachePath: string) {}
+
+  private setTable(table: Record<string, LiteLlmEntry>) {
+    this.table = table
+    this.lookups.clear()
+  }
 
   // Called after each successful refresh, e.g. to reprice stored rows.
   onRefresh: () => void = () => {}
@@ -77,10 +88,9 @@ export class PriceBook {
   private timer?: ReturnType<typeof setTimeout>
   private running: Promise<boolean> | null = null
 
-  // Loads overrides and the cached table from disk. Synchronous, so pricing
-  // works from the last good table before any download.
+  // Loads the cached table from disk. Synchronous, so pricing works from the
+  // last good table before any download.
   load() {
-    this.loadOverrides()
     this.loadCache()
   }
 
@@ -126,7 +136,7 @@ export class PriceBook {
       console.warn(`[pricing] refresh failed, keeping ${this.loadedAt ? 'cached' : 'empty'} table: ${(err as Error).message}`)
       return false
     }
-    this.table = table
+    this.setTable(table)
     this.loadedAt = Date.now()
     try {
       // Write beside the cache and rename over it, so a failed or partial
@@ -155,18 +165,6 @@ export class PriceBook {
     return true
   }
 
-  loadOverrides() {
-    this.overrides.clear()
-    for (const row of this.db.select().from(priceOverrides).all()) {
-      this.overrides.set(row.model, {
-        input: row.inputPerMTok,
-        output: row.outputPerMTok,
-        cacheRead: row.cacheReadPerMTok,
-        cacheWrite: row.cacheWritePerMTok,
-      })
-    }
-  }
-
   private loadCache() {
     let text: string
     try {
@@ -175,7 +173,7 @@ export class PriceBook {
       return // no cache yet
     }
     try {
-      this.table = parsePriceTable(text)
+      this.setTable(parsePriceTable(text))
       // The table is as fresh as the download that wrote the cache.
       this.loadedAt = statSync(this.cachePath).mtimeMs
     } catch (err) {
@@ -184,11 +182,16 @@ export class PriceBook {
   }
 
   // Finds rates for a model name, returning the entry name used.
-  lookup(rawModel: string): { rates: Rates; pricedAs: string } | null {
-    const override = this.overrides.get(rawModel.trim())
-    if (override) return { rates: override, pricedAs: `override:${rawModel.trim()}` }
+  lookup(rawModel: string): Priced | null {
+    let priced = this.lookups.get(rawModel)
+    if (priced === undefined) {
+      priced = this.find(normalizeModel(rawModel))
+      this.lookups.set(rawModel, priced)
+    }
+    return priced
+  }
 
-    const model = normalizeModel(rawModel)
+  private find(model: string): Priced | null {
     if (NEVER_PRICED.has(model)) return null
 
     const exact = this.table[model]
@@ -204,7 +207,7 @@ export class PriceBook {
     return this.fallback(model)
   }
 
-  private fallback(model: string): { rates: Rates; pricedAs: string } | null {
+  private fallback(model: string): Priced | null {
     if (model.startsWith('muse-') && model.endsWith('-contributor')) {
       const base = this.lookup(model.slice(0, -'-contributor'.length))
       return base ? { rates: CONTRIBUTOR_RATES, pricedAs: 'fallback:contributor' } : null
@@ -216,17 +219,30 @@ export class PriceBook {
     return null
   }
 
-  private toRates(key: string, e: LiteLlmEntry) {
-    if (e.input_cost_per_token == null || e.output_cost_per_token == null) return null
-    return {
-      pricedAs: key,
-      rates: {
-        input: perMTok(e.input_cost_per_token),
-        output: perMTok(e.output_cost_per_token),
-        cacheRead: e.cache_read_input_token_cost == null ? null : perMTok(e.cache_read_input_token_cost),
-        cacheWrite: e.cache_creation_input_token_cost == null ? null : perMTok(e.cache_creation_input_token_cost),
-      },
-    }
+  private toRates(key: string, e: LiteLlmEntry): Priced | null {
+    const base = baseRates(e)
+    if (!base) return null
+    const tiers = Object.entries(e.tiers ?? {})
+      .map(([above, t]) => {
+        // A tier names the rates that change; the rest stay at the base rate.
+        const merged = baseRates({ ...rateFields(e), ...t })
+        return merged ? { aboveTokens: Number(above), rates: merged } : null
+      })
+      .filter((t) => t !== null)
+      .sort((a, b) => a.aboveTokens - b.aboveTokens)
+    return { pricedAs: key, rates: tiers.length ? { ...base, tiers } : base }
+  }
+}
+
+const rateFields = (e: LiteLlmEntry) => Object.fromEntries(RATE_FIELDS.filter((f) => e[f] != null).map((f) => [f, e[f]]))
+
+function baseRates(e: Partial<Record<RateField, number>>): BaseRates | null {
+  if (e.input_cost_per_token == null || e.output_cost_per_token == null) return null
+  return {
+    input: perMTok(e.input_cost_per_token),
+    output: perMTok(e.output_cost_per_token),
+    cacheRead: e.cache_read_input_token_cost == null ? null : perMTok(e.cache_read_input_token_cost),
+    cacheWrite: e.cache_creation_input_token_cost == null ? null : perMTok(e.cache_creation_input_token_cost),
   }
 }
 
@@ -244,7 +260,14 @@ function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
     if (typeof value.mode === 'string') entry.mode = value.mode
     for (const field of RATE_FIELDS) {
       const rate = value[field]
-      if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) entry[field] = rate
+      if (isRate(rate)) entry[field] = rate
+    }
+    for (const [name, rate] of Object.entries(value)) {
+      const tier = TIER_FIELD.exec(name)
+      if (!tier || !isRate(rate)) continue
+      const above = Number(tier[2]) * 1000
+      entry.tiers ??= {}
+      ;(entry.tiers[above] ??= {})[tier[1] as RateField] = rate
     }
     // Without both required rates an entry can't price anything; dropping it
     // lets lookup fall through to another provider's listing of the model.
@@ -256,6 +279,10 @@ function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
 }
 
 const RATE_FIELDS = ['input_cost_per_token', 'output_cost_per_token', 'cache_read_input_token_cost', 'cache_creation_input_token_cost'] as const
+// "input_cost_per_token_above_200k_tokens" → field, threshold in thousands.
+const TIER_FIELD = new RegExp(`^(${RATE_FIELDS.join('|')})_above_(\\d+)k_tokens$`)
+
+const isRate = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -266,9 +293,19 @@ function rank(e: LiteLlmEntry) {
   return i === -1 ? FIRST_PARTY.length : i
 }
 
+// The rates that apply to a request: a long-context tier once the prompt
+// passes its threshold.
+function ratesFor(tokens: Tokens, rates: Rates): BaseRates {
+  const prompt = (tokens.input ?? 0) + (tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0)
+  let applied: BaseRates = rates
+  for (const tier of rates.tiers ?? []) if (prompt > tier.aboveTokens) applied = tier.rates
+  return applied
+}
+
 // Cost in micro-dollars. Cache tokens without a cache rate are charged at the
 // plain input rate, so cached tokens are never treated as free.
-export function costOf(tokens: Tokens, rates: Rates): number {
+export function costOf(tokens: Tokens, allRates: Rates): number {
+  const rates = ratesFor(tokens, allRates)
   const micros =
     (tokens.input ?? 0) * rates.input +
     (tokens.cacheRead ?? 0) * (rates.cacheRead ?? rates.input) +
@@ -279,7 +316,8 @@ export function costOf(tokens: Tokens, rates: Rates): number {
 
 // What cache reads saved versus paying full input price for them. Cache
 // writes aren't counted: they cost more than plain input, not less.
-export function cacheSavingsOf(tokens: Tokens, rates: Rates): number {
+export function cacheSavingsOf(tokens: Tokens, allRates: Rates): number {
+  const rates = ratesFor(tokens, allRates)
   const perToken = rates.input - (rates.cacheRead ?? rates.input)
   return Math.round(((tokens.cacheRead ?? 0) * perToken) / 1e6)
 }

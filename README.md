@@ -101,6 +101,41 @@ docker run -d --name cliproxy-dashboard --restart unless-stopped \
 
 The image has a `HEALTHCHECK`. It fails, and `GET /api/health` returns 503, once the collector has been disconnected from CLIProxyAPI for more than 2 minutes.
 
+## Backups
+
+CLIProxyAPI deletes usage records once they're read, so `data/usage.db` is the only copy of your history. Back it up with:
+
+```sh
+bun server/src/backup.ts [dir] [--keep N]   # or: npm run backup
+```
+
+This writes a consistent snapshot, `usage-<UTC time>.db`, to `dir` (default `data/backups/`), checks it, and with `--keep` deletes all but the newest N. It's safe while the server is running, because it uses SQLite's `VACUUM INTO` and never blocks the collector. Don't use `cp` on `usage.db`: in WAL mode, recent writes are in `usage.db-wal`, and a plain copy can miss them or catch a write halfway.
+
+Run it on a schedule, for example with a systemd user timer:
+
+```ini
+# ~/.config/systemd/user/cliproxy-dashboard-backup.service
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/cliproxy-dashboard
+ExecStart=/path/to/bun server/src/backup.ts --keep 14
+
+# ~/.config/systemd/user/cliproxy-dashboard-backup.timer
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+In Docker: `docker exec cliproxy-dashboard bun server/src/backup.ts --keep 14`. The backups land in the mounted `data/` directory. Keep copies somewhere other than the dashboard's disk too.
+
+To restore: stop the server, delete `usage.db-wal` and `usage.db-shm`, replace `usage.db` with the backup, and start the server.
+
+### Database size
+
+Each request is one row of a few hundred bytes, so a busy setup grows by tens of MB a year. History is kept forever. The dashboard reads per-15-minute totals (`usage_rollup`), so it stays fast however many requests are stored. To prune anyway, take a backup and then delete old rows, for example `DELETE FROM requests WHERE occurred_at < <ms>`. The totals update with them, so pruned requests also disappear from the dashboard.
+
 ## Security
 
 - **The dashboard has no login.** Anyone who can reach it can read usage and device data, rename machines (`PUT`/`DELETE /api/devices/name`), and import historical transcripts (`POST /api/import`). It binds to `127.0.0.1` by default; to reach it from elsewhere, use an SSH tunnel, `tailscale serve` with Tailnet ACLs, or a reverse proxy with its own authentication. Do not expose it directly to an untrusted network.
@@ -112,7 +147,7 @@ The image has a `HEALTHCHECK`. It fails, and `GET /api/health` returns 503, once
 ## Limitations
 
 - **Single consumer of usage records.** CLIProxyAPI deletes a usage record once it is read, so this server must be the only consumer reading the usage queue. Records produced while the server is down are kept for at most `redis-usage-queue-retention-seconds` (max 3600).
-- Costs are API-equivalent estimates from LiteLLM's public list prices, not actual subscription billing. Models missing from LiteLLM's table show as unpriced unless overridden in the `price_overrides` table.
+- Costs are API-equivalent estimates from LiteLLM's public list prices, including long-context rates (such as `*_above_200k_tokens`, applied to the whole request once its prompt passes the threshold). They aren't actual subscription billing. Models missing from LiteLLM's table show as unpriced, and are priced automatically once the table lists them.
 
 ## Development
 
@@ -129,6 +164,7 @@ npm run dev           # Vite on 127.0.0.1:5173, proxying /api to the server
 | `npm run build` | Type-check the frontend and its tests, and build into `dist/` |
 | `npm test` | Server tests, then frontend tests (happy-dom) in a separate Bun process |
 | `npm run db:generate` | Generate a migration after editing `server/src/db/schema.ts` |
+| `npm run backup` | Snapshot the database to `data/backups/` (see [Backups](#backups)) |
 
 ### Importing earlier history
 

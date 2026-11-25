@@ -123,3 +123,61 @@ describe('all-time window bounds (D5)', () => {
     expect(keys).toEqual(expected)
   })
 })
+
+describe('time zones whose offset is not whole hours (D6)', () => {
+  // 2026-10-14 in India (+05:30) runs 2026-10-13T18:30Z to 2026-10-14T18:30Z.
+  const ist = (h: number, m: number) => new Date(Date.UTC(2026, 9, 13, 18, 30) + (h * 60 + m) * 60e3)
+
+  test('requests just after local midnight land on the right local day', () => {
+    const db = fixture([{ occurredAt: ist(0, 10) }, { occurredAt: ist(-1, 50) }])
+    const days = usageSummary(db, '30d', 'Asia/Kolkata', now).series
+    const day = (key: string) => days.find((d) => d.key === key)?.providers.openai?.costMicros ?? 0
+    expect(day('2026-10-14')).toBe(1000) // 00:10 local
+    expect(day('2026-10-13')).toBe(1000) // 23:50 local the day before
+  })
+
+  test("the window includes its first day's first half hour", () => {
+    // 30d ending 2026-10-14 starts on 2026-09-15 at local midnight = 18:30Z the day before.
+    const startOfFirstDay = new Date(Date.UTC(2026, 8, 14, 18, 30))
+    const db = fixture([{ occurredAt: new Date(startOfFirstDay.getTime() + 10 * 60e3) }])
+    const summary = usageSummary(db, '30d', 'Asia/Kolkata', now)
+    expect(summary.totals.records).toBe(1)
+    expect(summary.series[0]).toMatchObject({ key: '2026-09-15', providers: { openai: { costMicros: 1000 } } })
+  })
+
+  test('hourly buckets follow local hours (+05:45)', () => {
+    const at = Date.UTC(2026, 9, 14, 11, 50) // 17:35 in Kathmandu
+    const db = fixture([{ occurredAt: new Date(at) }])
+    const summary = usageSummary(db, '24h', 'Asia/Kathmandu', now)
+    const hit = summary.series.find((s) => s.providers.openai)
+    // The bucket starts at 17:00 local = 11:15Z.
+    expect(hit?.key).toBe(Date.UTC(2026, 9, 14, 11, 15))
+    expect(summary.series).toHaveLength(24)
+    expect(summary.totals.records).toBe(1)
+  })
+})
+
+describe('summary cache (P4)', () => {
+  test('repeats are served from cache until data changes', () => {
+    const db = fixture([{}])
+    const first = usageSummary(db, '24h', 'UTC', now)
+    expect(usageSummary(db, '24h', 'UTC', now)).toBe(first)
+    db.insert(requests).values({ id: 'new', source: 'cliproxy', occurredAt: new Date(now - 5000), receivedAt: new Date(now), provider: 'codex', model: 'gpt-6.1-sol', failed: false, costMicros: 1 }).run()
+    const second = usageSummary(db, '24h', 'UTC', now)
+    expect(second).not.toBe(first)
+    expect(second.totals.records).toBe(2)
+  })
+
+  test('different databases never share entries', () => {
+    const a = fixture([{}])
+    const b = fixture([{}, {}])
+    expect(usageSummary(a, '24h', 'UTC', now).totals.records).toBe(1)
+    expect(usageSummary(b, '24h', 'UTC', now).totals.records).toBe(2)
+  })
+
+  test('a new window (time moving on) is recomputed', () => {
+    const db = fixture([{}])
+    const first = usageSummary(db, '24h', 'UTC', now)
+    expect(usageSummary(db, '24h', 'UTC', now + 2 * 3600e3)).not.toBe(first)
+  })
+})

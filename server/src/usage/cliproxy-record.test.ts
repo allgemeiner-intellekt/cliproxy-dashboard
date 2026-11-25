@@ -2,12 +2,11 @@
 // dashboard reports, so each mapping rule is pinned here.
 
 import { describe, expect, test } from 'bun:test'
-import { openDb } from '../db/client'
 import { hashKey, isUsageRecord, toRequestRow, type CliproxyRecord } from './cliproxy-record'
 import { PriceBook } from './pricing'
 
 function prices() {
-  const b = new PriceBook(openDb(':memory:'), '/nonexistent/prices.json')
+  const b = new PriceBook('/nonexistent/prices.json')
   ;(b as unknown as { table: unknown }).table = {
     'gpt-6.1-sol': { litellm_provider: 'openai', input_cost_per_token: 1e-6, output_cost_per_token: 1e-5, cache_read_input_token_cost: 1e-7 },
     'gpt-6.1-sol-mini': { litellm_provider: 'openai', input_cost_per_token: 1e-7, output_cost_per_token: 1e-6 },

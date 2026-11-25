@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "server": "bun server/src/index.ts",
     "server:check": "tsc -p server/tsconfig.json",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "backup": "bun server/src/backup.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.3",

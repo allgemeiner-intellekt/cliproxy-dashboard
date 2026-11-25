@@ -12,7 +12,7 @@ function app(overrides: { collector?: object; allowedHosts?: string[] } = {}) {
   const db = openDb(':memory:')
   const collector = (overrides.collector ?? { status: { connected: true } }) as Deps[1]
   const tailnet = { syncedAt: null, lastError: null } as unknown as Deps[3]
-  const prices = new PriceBook(db, '/nonexistent/prices.json')
+  const prices = new PriceBook('/nonexistent/prices.json')
   // Mounted the way index.ts mounts it, so sub-app middleware and handlers
   // are exercised through the production routing.
   const root = new Hono()

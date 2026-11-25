@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { ensureRollup } from './rollup'
 import * as schema from './schema'
 
 export type Db = ReturnType<typeof openDb>
@@ -30,6 +31,7 @@ export function openDb(configuredPath: string) {
 
   const db = drizzle(sqlite, { schema })
   migrate(db, { migrationsFolder: new URL('../../drizzle', import.meta.url).pathname })
+  ensureRollup(sqlite)
   return db
 }
 
