@@ -14,6 +14,7 @@ import { and, eq, gte, isNotNull, min, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import type { Db } from '../db/client'
 import { machineIdentities, machines, requests, tailnetDevices } from '../db/schema'
+import { EARLIEST_PLAUSIBLE_MS } from './timestamps'
 
 export type Range = '24h' | '7d' | '30d' | '90d' | 'all'
 export const RANGES: Range[] = ['24h', '7d', '30d', '90d', 'all']
@@ -86,13 +87,16 @@ function windowFor(range: Range, timeZone: string, now: number, earliestMs: numb
   if (range === '24h') return hourWindow(Math.floor(now / HOUR) * HOUR - 23 * HOUR, now)
 
   const dayOf = dayKeyFormatter(timeZone)
+  // Built newest first and reversed once (unshift per day is quadratic).
   const keys = [dayOf(now)]
   if (range === 'all') {
-    const firstDay = dayOf(earliestMs ?? now)
-    while (keys[0] > firstDay) keys.unshift(previousDay(keys[0]))
+    // A stray ancient row must not stretch the window across centuries.
+    const firstDay = dayOf(Math.min(Math.max(earliestMs ?? now, EARLIEST_PLAUSIBLE_MS), now))
+    while (keys[keys.length - 1] > firstDay) keys.push(previousDay(keys[keys.length - 1]))
   } else {
-    while (keys.length < RANGE_DAYS[range]) keys.unshift(previousDay(keys[0]))
+    while (keys.length < RANGE_DAYS[range]) keys.push(previousDay(keys[keys.length - 1]))
   }
+  keys.reverse()
 
   // First whole hour that falls on the first day of the window.
   let startMs = Math.floor((now - (keys.length + 1) * 86400e3) / HOUR) * HOUR

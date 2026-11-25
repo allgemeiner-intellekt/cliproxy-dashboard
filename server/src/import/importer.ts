@@ -7,11 +7,19 @@ import { eq, min } from 'drizzle-orm'
 import type { Db } from '../db/client'
 import { requests } from '../db/schema'
 import { cacheSavingsOf, costOf, type PriceBook } from '../usage/pricing'
+import { isPlausibleTimestamp } from '../usage/timestamps'
 import { newCodexState, parseClaudeLine, parseCodexLine, type TranscriptRecord } from './transcripts'
 
 export type TranscriptFile = { tool: 'claude-code' | 'codex'; lines: string[] }
 
-export type ImportResult = { imported: number; alreadyImported: number; afterCutoff: number; cutoffMs: number }
+export type ImportResult = {
+  imported: number
+  alreadyImported: number
+  afterCutoff: number
+  // Records dated implausibly (before 2020 or in the future), skipped.
+  invalidTimestamp: number
+  cutoffMs: number
+}
 
 // When live collection began: the first request received from the proxy.
 function collectionStart(db: Db): number {
@@ -33,7 +41,7 @@ function parseFile(file: TranscriptFile): TranscriptRecord[] {
 // 127.0.0.1 for this machine), so it gets that machine's name.
 export function importTranscripts(db: Db, prices: PriceBook, files: TranscriptFile[], clientIp: string): ImportResult {
   const cutoffMs = collectionStart(db)
-  const result: ImportResult = { imported: 0, alreadyImported: 0, afterCutoff: 0, cutoffMs }
+  const result: ImportResult = { imported: 0, alreadyImported: 0, afterCutoff: 0, invalidTimestamp: 0, cutoffMs }
   const seen = new Set<string>()
 
   db.transaction((tx) => {
@@ -41,6 +49,10 @@ export function importTranscripts(db: Db, prices: PriceBook, files: TranscriptFi
       // Claude repeats a message's usage across lines; keep the first.
       if (seen.has(record.key)) continue
       seen.add(record.key)
+      if (!isPlausibleTimestamp(record.timestampMs)) {
+        result.invalidTimestamp++
+        continue
+      }
       if (record.timestampMs >= cutoffMs) {
         result.afterCutoff++
         continue

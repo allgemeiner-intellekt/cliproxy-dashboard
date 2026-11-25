@@ -105,3 +105,22 @@ describe('usage windows', () => {
     expect(summary.series.find((b) => b.key === Date.UTC(2026, 9, 14, 9))?.providers.openai?.costMicros).toBe(2000)
   })
 })
+
+describe('all-time window bounds (D5)', () => {
+  test('an ancient row does not stretch the window back centuries', () => {
+    const db = fixture([{ occurredAt: new Date(Date.UTC(1000, 0, 1)) }, {}])
+    const started = performance.now()
+    const summary = usageSummary(db, 'all', 'UTC', now)
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(summary.series[0].key).toBe('2020-01-01')
+    expect(summary.series.at(-1)?.key).toBe('2026-10-14')
+  })
+
+  test('days stay in order and contiguous', () => {
+    const db = fixture([{ occurredAt: new Date(Date.UTC(2026, 8, 28)) }])
+    const keys = usageSummary(db, 'all', 'UTC', now).series.map((s) => s.key)
+    expect(keys[0]).toBe('2026-09-28')
+    expect(keys).toHaveLength(17)
+    expect([...keys].sort()).toEqual(keys)
+  })
+})

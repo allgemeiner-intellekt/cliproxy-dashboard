@@ -11,6 +11,7 @@ describe('parseEnv', () => {
       proxyPort: 8317,
       host: '127.0.0.1',
       port: 5174,
+      allowedHosts: [],
       staticDir: 'dist',
       databasePath: 'data/usage.db',
       priceCachePath: 'data/litellm-prices.json',
@@ -49,6 +50,10 @@ describe('parseEnv', () => {
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:9\t000' }).proxyPort).toBe(9000)
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http:///proxy.lan:80' }).proxyPort).toBe(80)
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:080/x' }).proxyPort).toBe(80)
+  })
+
+  test('allowed hosts are a comma-separated list', () => {
+    expect(parseEnv({ ...KEY, USAGE_ALLOWED_HOSTS: ' dash.example.com, .corp.lan ,' }).allowedHosts).toEqual(['dash.example.com', '.corp.lan'])
   })
 
   test('rejects proxy port 0', () => {
