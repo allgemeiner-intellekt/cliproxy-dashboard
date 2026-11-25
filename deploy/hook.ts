@@ -1,10 +1,17 @@
 // Deploy receiver: CI asks it to redeploy a TrueNAS app after publishing an image.
 //
 //   POST /deploy            {"app": "<name>"}  signed, returns 202 {"job": <id>}
-//   GET  /deploy/jobs/:id   state of a job this receiver started
+//   GET  /deploy/jobs/:id   signed, state of a job this receiver started
 //
-// Requests are signed with HMAC-SHA256 over `${timestamp}.${body}` using
-// DEPLOY_SECRET, sent as X-Deploy-Timestamp and X-Deploy-Signature (hex).
+// Requests are signed with HMAC-SHA256 using DEPLOY_SECRET, sent as
+// X-Deploy-Timestamp (unix seconds) and X-Deploy-Signature (hex):
+//   POST: over `${timestamp}.${body}`
+//   GET:  over `${timestamp}.job ${id}`, e.g. `1790000000.job 7`
+// The timestamp must be within 5 minutes. Each POST signature is accepted
+// once, so a captured request can't be replayed inside that window. Used
+// signatures are written to DEPLOY_STATE_FILE (default
+// /var/tmp/cliproxy-deploy-hook.json) before the deploy starts, so a restart
+// doesn't forget them.
 // Only apps listed in DEPLOY_APPS can be redeployed. The TrueNAS key
 // (DEPLOY_TRUENAS_KEY_FILE) never leaves this machine.
 //
@@ -12,13 +19,17 @@
 // answers 403 to a role-scoped API key that JSON-RPC accepts.
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 
 const MAX_SKEW_S = 300
+const MAX_BODY_BYTES = 4096
+const MAX_JOBS = 100
+const MAX_SIGNATURES = 10_000
 const secret = required('DEPLOY_SECRET')
 const apps = new Set(required('DEPLOY_APPS').split(',').map((a) => a.trim()))
 const truenasKey = readFileSync(required('DEPLOY_TRUENAS_KEY_FILE'), 'utf8').trim()
 const truenas = process.env.DEPLOY_TRUENAS_URL ?? 'ws://127.0.0.1/api/current'
+const stateFile = process.env.DEPLOY_STATE_FILE ?? '/var/tmp/cliproxy-deploy-hook.json'
 
 function required(name: string) {
   const value = process.env[name]
@@ -26,12 +37,56 @@ function required(name: string) {
   return value
 }
 
-function signed(timestamp: string, signature: string, body: string) {
+function signed(req: Request, payload: string) {
+  const timestamp = req.headers.get('x-deploy-timestamp') ?? ''
+  const signature = req.headers.get('x-deploy-signature') ?? ''
+  if (!/^\d{1,12}$/.test(timestamp) || !/^[0-9a-f]{64}$/i.test(signature)) return false
   const age = Math.abs(Date.now() / 1000 - Number(timestamp))
-  if (!Number.isFinite(age) || age > MAX_SKEW_S) return false
-  const expected = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest()
-  const given = Buffer.from(signature, 'hex')
-  return given.length === expected.length && timingSafeEqual(given, expected)
+  if (age > MAX_SKEW_S) return false
+  const expected = createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest()
+  return timingSafeEqual(Buffer.from(signature, 'hex'), expected)
+}
+
+// POST signatures seen within the skew window, with when they stop being
+// valid (unix seconds). A state file that exists but can't be read stops the
+// hook from starting, rather than silently forgetting what it accepted.
+const usedSignatures = new Map<string, number>(
+  existsSync(stateFile) ? Object.entries(JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, number>) : [],
+)
+
+function saveSignatures() {
+  const tmp = `${stateFile}.tmp`
+  writeFileSync(tmp, JSON.stringify(Object.fromEntries(usedSignatures)), { mode: 0o600 })
+  renameSync(tmp, stateFile)
+}
+
+// 'ok', or why this signed POST can't be accepted. Never evicts a live entry:
+// at capacity it refuses instead. The signature is on disk before 'ok'.
+function firstUse(req: Request): 'ok' | 'replay' | 'busy' {
+  const now = Date.now() / 1000
+  for (const [sig, expires] of usedSignatures) if (expires < now) usedSignatures.delete(sig)
+  const signature = req.headers.get('x-deploy-signature')!.toLowerCase()
+  if (usedSignatures.has(signature)) return 'replay'
+  if (usedSignatures.size >= MAX_SIGNATURES) return 'busy'
+  usedSignatures.set(signature, Number(req.headers.get('x-deploy-timestamp')) + MAX_SKEW_S + 1)
+  try {
+    saveSignatures()
+  } catch (err) {
+    usedSignatures.delete(signature)
+    console.error(`[deploy] cannot record signature in ${stateFile}: ${(err as Error).message}`)
+    return 'busy'
+  }
+  return 'ok'
+}
+
+function appFrom(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    const app = typeof parsed === 'object' && parsed !== null ? (parsed as { app?: unknown }).app : undefined
+    return typeof app === 'string' ? app : null
+  } catch {
+    return null
+  }
 }
 
 // A logged-in JSON-RPC session. TrueNAS only shows a job to the session that
@@ -72,14 +127,28 @@ async function session() {
 type JobState = { state: 'RUNNING' | 'SUCCESS' | 'FAILED'; error: string | null }
 const jobs = new Map<number, JobState>()
 
+function startTracking(job: number) {
+  jobs.set(job, { state: 'RUNNING', error: null })
+  // Maps iterate in insertion order: drop the oldest.
+  for (const id of jobs.keys()) {
+    if (jobs.size <= MAX_JOBS) break
+    jobs.delete(id)
+  }
+}
+
+// Updates in place (keeping its age), and only if the job is still tracked.
+function finish(job: number, state: JobState) {
+  if (jobs.has(job)) jobs.set(job, state)
+}
+
 async function redeploy(app: string) {
   const s = await session()
   try {
     const job = Number(await s.call('app.redeploy', [app]))
-    jobs.set(job, { state: 'RUNNING', error: null })
+    startTracking(job)
     s.call('core.job_wait', [job])
-      .then(() => jobs.set(job, { state: 'SUCCESS', error: null }))
-      .catch((err: Error) => jobs.set(job, { state: 'FAILED', error: err.message }))
+      .then(() => finish(job, { state: 'SUCCESS', error: null }))
+      .catch((err: Error) => finish(job, { state: 'FAILED', error: err.message }))
       .finally(s.close)
     return job
   } catch (err) {
@@ -88,18 +157,21 @@ async function redeploy(app: string) {
   }
 }
 
-Bun.serve({
+const server = Bun.serve({
   hostname: '127.0.0.1',
   port: Number(process.env.DEPLOY_PORT ?? 30091),
+  maxRequestBodySize: MAX_BODY_BYTES,
   async fetch(req) {
     const url = new URL(req.url)
 
     if (req.method === 'POST' && url.pathname === '/deploy') {
       const body = await req.text()
-      if (!signed(req.headers.get('x-deploy-timestamp') ?? '', req.headers.get('x-deploy-signature') ?? '', body)) {
-        return Response.json({ error: 'bad signature' }, { status: 401 })
-      }
-      const app = JSON.parse(body).app
+      if (!signed(req, body)) return Response.json({ error: 'bad signature' }, { status: 401 })
+      const use = firstUse(req)
+      if (use === 'replay') return Response.json({ error: 'signature already used' }, { status: 409 })
+      if (use === 'busy') return Response.json({ error: 'cannot accept deploy requests right now' }, { status: 503 })
+      const app = appFrom(body)
+      if (app === null) return Response.json({ error: 'body must be {"app": "<name>"}' }, { status: 400 })
       if (!apps.has(app)) return Response.json({ error: `${app} is not deployable` }, { status: 403 })
       let job: number
       try {
@@ -113,10 +185,17 @@ Bun.serve({
     }
 
     const match = url.pathname.match(/^\/deploy\/jobs\/(\d+)$/)
-    const job = match && jobs.get(Number(match[1]))
-    if (req.method === 'GET' && job) return Response.json(job)
+    if (req.method === 'GET' && match) {
+      // Job errors come from TrueNAS, so only signed callers see them.
+      // no-store: a shared cache in front must not hand a signed answer to an
+      // unsigned request for the same URL.
+      const headers = { 'Cache-Control': 'no-store' }
+      if (!signed(req, `job ${match[1]}`)) return Response.json({ error: 'bad signature' }, { status: 401, headers })
+      const job = jobs.get(Number(match[1]))
+      return job ? Response.json(job, { headers }) : Response.json({ error: 'not found' }, { status: 404, headers })
+    }
 
     return Response.json({ error: 'not found' }, { status: 404 })
   },
 })
-console.log('[deploy] listening')
+console.log(`[deploy] listening on ${server.port}`)

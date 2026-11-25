@@ -3,6 +3,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
@@ -55,7 +56,7 @@ jobs:
   # Builds the image without pushing (PRs and manual runs on other branches).
   image:
     needs: check
-    if: github.ref != 'refs/heads/main'
+    if: github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -155,12 +156,18 @@ jobs:
           DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
           DEPLOY_HOOK_URL: ${{ vars.DEPLOY_HOOK_URL }}
         run: |
+          # Signs "<timestamp>.<payload>" and sends it as hook.ts expects.
+          signed() {
+            local payload=$1; shift
+            local ts sig
+            ts=$(date +%s)
+            sig=$(printf '%s' "$ts.$payload" | openssl dgst -sha256 -hmac "$DEPLOY_SECRET" -hex | sed 's/.* //')
+            curl -fsS -H "X-Deploy-Timestamp: $ts" -H "X-Deploy-Signature: $sig" "$@"
+          }
           body='{"app":"cliproxy-dashboard"}'
-          ts=$(date +%s)
-          sig=$(printf '%s' "$ts.$body" | openssl dgst -sha256 -hmac "$DEPLOY_SECRET" -hex | sed 's/.* //')
-          job=$(curl -fsS -H "X-Deploy-Timestamp: $ts" -H "X-Deploy-Signature: $sig" -d "$body" "$DEPLOY_HOOK_URL" | jq -r .job)
+          job=$(signed "$body" -H 'Content-Type: application/json' -d "$body" "$DEPLOY_HOOK_URL" | jq -r .job)
           for _ in $(seq 60); do
-            read -r state error < <(curl -fsS "$DEPLOY_HOOK_URL/jobs/$job" | jq -r '[.state, (.error // "")] | @tsv')
+            read -r state error < <(signed "job $job" "$DEPLOY_HOOK_URL/jobs/$job" | jq -r '[.state, (.error // "")] | @tsv')
             case "$state" in
               SUCCESS) echo "deployed (job $job)"; exit 0 ;;
               FAILED|ABORTED) echo "deploy failed: $error"; exit 1 ;;
@@ -168,3 +175,137 @@ jobs:
             sleep 5
           done
           echo "deploy timed out (job $job)"; exit 1
+
+  # A vX.Y.Z tag on a commit main already published: tags that image as
+  # :X.Y.Z (and :X.Y) and creates the GitHub release from CHANGELOG.md.
+  version:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+    # One at a time, so the X.Y check below sees every earlier release.
+    concurrency:
+      group: version-tags
+      queue: max
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - id: version
+        name: Check the tag matches package.json and CHANGELOG.md
+        run: |
+          version=$(jq -r .version package.json)
+          # SemVer without +build metadata, which Docker tags can't carry.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::package.json version $version must be X.Y.Z or X.Y.Z-prerelease."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version $version."
+            exit 1
+          fi
+          # The "## [X.Y.Z]" section, matched literally, up to the next "## ".
+          notes=$(awk -v h="## [$version]" '
+            found && /^## / { exit }
+            found { print }
+            index($0, h) == 1 { found = 1 }
+          ' CHANGELOG.md)
+          if [ -z "$(tr -d '[:space:]' <<<"$notes")" ]; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the published image with the version
+        shell: bash # -eo pipefail, so a failed lookup in a pipeline fails the step
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Prints the tag's digest, or nothing if the tag doesn't exist.
+          # Any other lookup failure fails the step.
+          digest_of() {
+            local out
+            if out=$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>&1); then
+              jq -er .digest <<<"$out"
+            elif grep -qiE 'not found|manifest unknown' <<<"$out"; then
+              return 0
+            else
+              echo "::error::Looking up $1 failed: $out" >&2
+              return 1
+            fi
+          }
+          digest=$(digest_of "$IMAGE:$GITHUB_SHA")
+          if [ -z "$digest" ]; then
+            echo "::error::No image for $GITHUB_SHA. Tag a commit that main has published."
+            exit 1
+          fi
+          # A version tag never moves; if it already matches, leave it be.
+          existing=$(digest_of "$IMAGE:$VERSION")
+          tags=()
+          if [ -z "$existing" ]; then
+            tags+=(--tag "$IMAGE:$VERSION")
+          elif [ "$existing" != "$digest" ]; then
+            echo "::error::$IMAGE:$VERSION already points at $existing, not $digest."
+            exit 1
+          fi
+          # Stable releases move X.Y, unless GHCR already has a newer X.Y.* image
+          # (so rerunning an older tag can't roll it back).
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            minor=${VERSION%.*}
+            repo=${IMAGE#ghcr.io/}
+            bearer=$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token)
+            published=()
+            url="https://ghcr.io/v2/$repo/tags/list?n=1000"
+            while [ -n "$url" ]; do
+              headers=$(mktemp)
+              page=$(curl -fsS -D "$headers" -H "Authorization: Bearer $bearer" "$url")
+              mapfile -t -O "${#published[@]}" published < <(jq -r '.tags // [] | .[]' <<<"$page")
+              next=$(grep -i '^link:' "$headers" | sed -n 's/.*<\([^>]*\)>.*/\1/p' || true)
+              url=${next:+https://ghcr.io$next}
+            done
+            newest=$( { printf '%s\n' "${published[@]}" "$VERSION"; } \
+              | grep -E "^${minor//./\\.}\.[0-9]+$" | sort -V | tail -1)
+            if [ "$newest" = "$VERSION" ]; then
+              tags+=(--tag "$IMAGE:$minor")
+            else
+              echo "::notice::$IMAGE:$newest is newer than $VERSION; leaving :$minor alone."
+            fi
+          fi
+          if [ ${#tags[@]} -gt 0 ]; then
+            docker buildx imagetools create "${tags[@]}" "$IMAGE@$digest"
+          else
+            echo "Nothing to tag."
+          fi
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>&1); then
+            if [ "$draft" = true ]; then
+              echo "::error::A draft release for $GITHUB_REF_NAME exists. Publish or delete it, then rerun."
+              exit 1
+            fi
+            echo "Release $GITHUB_REF_NAME already exists."
+            exit 0
+          elif ! grep -qi 'release not found' <<<"$draft"; then
+            echo "::error::Looking up release $GITHUB_REF_NAME failed: $draft"
+            exit 1
+          fi
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}"
