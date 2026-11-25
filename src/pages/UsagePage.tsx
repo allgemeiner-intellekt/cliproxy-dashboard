@@ -119,9 +119,9 @@ function TotalsRow({ totals }: { totals: Totals }) {
     ['Output', formatTokens(totals.outputTokens)],
     ['Cache savings', formatUsd(totals.cacheSavingsMicros)],
   ]
-  const totalInput = totals.cachedTokens + totals.uncachedTokens
+  const totalInput = totals.cachedTokens + totals.cacheWriteTokens + totals.uncachedTokens
   const cacheHit = totalInput > 0 ? totals.cachedTokens / totalInput : 0
-  const mixTotal = totals.cachedTokens + totals.uncachedTokens + totals.outputTokens
+  const mixTotal = totalInput + totals.outputTokens
   const pct = (n: number) => (mixTotal > 0 ? (n / mixTotal) * 100 : 0)
 
   return (
@@ -142,6 +142,7 @@ function TotalsRow({ totals }: { totals: Totals }) {
           </div>
           <div className="umix-bar" aria-hidden>
             {totals.cachedTokens > 0 && <div className="umix-seg umix-seg-cached" style={{ width: `${pct(totals.cachedTokens)}%` }} />}
+            {totals.cacheWriteTokens > 0 && <div className="umix-seg umix-seg-cache-write" style={{ width: `${pct(totals.cacheWriteTokens)}%` }} />}
             {totals.uncachedTokens > 0 && <div className="umix-seg umix-seg-uncached" style={{ width: `${pct(totals.uncachedTokens)}%` }} />}
             {totals.outputTokens > 0 && <div className="umix-seg umix-seg-output" style={{ width: `${pct(totals.outputTokens)}%` }} />}
           </div>
@@ -150,6 +151,12 @@ function TotalsRow({ totals }: { totals: Totals }) {
               <span className="umix-swatch umix-seg-cached" />
               Cached read <strong>{formatTokens(totals.cachedTokens)}</strong>
             </span>
+            {totals.cacheWriteTokens > 0 && (
+              <span className="umix-legend-item">
+                <span className="umix-swatch umix-seg-cache-write" />
+                Cache write <strong>{formatTokens(totals.cacheWriteTokens)}</strong>
+              </span>
+            )}
             <span className="umix-legend-item">
               <span className="umix-swatch umix-seg-uncached" />
               Uncached input <strong>{formatTokens(totals.uncachedTokens)}</strong>

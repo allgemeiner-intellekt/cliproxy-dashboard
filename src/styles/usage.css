@@ -310,9 +310,14 @@
   opacity: 0.45;
 }
 
+.umix-seg-cache-write {
+  background: var(--fg-2);
+  opacity: 0.72;
+}
+
 .umix-seg-uncached {
   background: var(--fg-1);
-  opacity: 0.78;
+  opacity: 0.85;
 }
 
 .umix-seg-output {
