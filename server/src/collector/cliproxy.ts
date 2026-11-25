@@ -54,6 +54,7 @@ class AuthError extends Error {
 
 export type CollectorStatus = {
   connected: boolean
+  authFailed: boolean
   since: number | null
   // When the collector last lost (or, at startup, had not yet made) its
   // subscription; null while connected.
@@ -75,14 +76,25 @@ type Options = {
 }
 
 export class CliproxyCollector {
-  status: CollectorStatus = { connected: false, since: null, downSince: Date.now(), lastRecordAt: null, stored: 0, lastError: null }
+  status: CollectorStatus = {
+    connected: false,
+    authFailed: false,
+    since: null,
+    downSince: Date.now(),
+    lastRecordAt: null,
+    stored: 0,
+    lastError: null,
+  }
   private backoffMs: number
   private stopped = false
+  private runId = 0
   private activeSub?: RespConnection
   private activeDrain?: RespConnection
+  private drainPromise?: Promise<void>
   private retryTimer?: ReturnType<typeof setTimeout>
   private pendingFlushTimer?: ReturnType<typeof setTimeout>
   private pendingRows: RequestRow[] = []
+  private handshakeResolvers: (() => void)[] = []
 
   constructor(
     private db: Db,
@@ -92,13 +104,73 @@ export class CliproxyCollector {
     this.backoffMs = options.initialBackoffMs ?? INITIAL_BACKOFF_MS
   }
 
+  get target(): string {
+    const host = this.options.host.includes(':') ? `[${this.options.host}]` : this.options.host
+    return `http://${host}:${this.options.port}`
+  }
+
+  get keyConfigured(): boolean {
+    return this.options.managementKey.length > 0
+  }
+
+  private sanitizeError(msg: string): string {
+    const key = this.options.managementKey
+    if (!key) return msg
+    return msg.includes(key) ? msg.split(key).join('[REDACTED]') : msg
+  }
+
+  private settleHandshake() {
+    if (this.handshakeResolvers.length === 0) return
+    const resolvers = this.handshakeResolvers.splice(0, this.handshakeResolvers.length)
+    for (const resolve of resolvers) resolve()
+  }
+
   start() {
     this.stopped = false
-    void this.run()
+    this.runId += 1
+    void this.run(this.runId)
+  }
+
+  // Tears down the subscription/retry timer and starts a fresh connect attempt
+  // immediately (also clears a prior authFailed halt). Any in-flight LPOP on
+  // the drain socket is allowed to finish and persist before closing.
+  // Resolves once the new attempt's handshake settles (or after waitMs).
+  reconnect(waitMs = this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS): Promise<void> {
+    this.settleHandshake()
+    this.runId += 1
+    this.stopped = false
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = undefined
+    }
+    this.activeSub?.close()
+    this.activeSub = undefined
+    this.backoffMs = this.options.initialBackoffMs ?? INITIAL_BACKOFF_MS
+    if (this.status.connected) this.status.downSince = Date.now()
+    this.status.connected = false
+    this.status.authFailed = false
+    this.status.lastError = null
+
+    const settled = new Promise<void>((resolve) => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve()
+      }
+      const timer = setTimeout(finish, waitMs)
+      this.handshakeResolvers.push(finish)
+    })
+
+    void this.run(this.runId)
+    return settled
   }
 
   stop() {
+    this.runId += 1
     this.stopped = true
+    this.settleHandshake()
     if (this.retryTimer) {
       clearTimeout(this.retryTimer)
       this.retryTimer = undefined
@@ -113,8 +185,8 @@ export class CliproxyCollector {
     this.activeSub = undefined
   }
 
-  private async run() {
-    if (this.stopped) return
+  private async run(id: number) {
+    if (this.stopped || id !== this.runId) return
     const sub = new RespConnection()
     this.activeSub = sub
     let closeErr: Error | undefined
@@ -130,34 +202,55 @@ export class CliproxyCollector {
     try {
       const drainTimeoutMs = this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS
       await sub.connect(this.options.host, this.options.port, drainTimeoutMs)
+      if (this.stopped || id !== this.runId) return
       await this.authenticate(sub, drainTimeoutMs)
+      if (this.stopped || id !== this.runId) return
       sub.onMessage = (_channel, payload) => this.store(payload)
       await sub.commandWithTimeout(drainTimeoutMs, 'SUBSCRIBE', CHANNEL)
+      if (this.stopped || id !== this.runId) return
       sub.startHeartbeat(
         this.options.pingIntervalMs ?? PING_INTERVAL_MS,
         this.options.pingTimeoutMs ?? PING_TIMEOUT_MS,
       )
 
-      this.status = { ...this.status, connected: true, since: Date.now(), downSince: null, lastError: null }
+      this.status = {
+        ...this.status,
+        connected: true,
+        authFailed: false,
+        since: Date.now(),
+        downSince: null,
+        lastError: null,
+      }
+      this.settleHandshake()
       console.log('[collector] subscribed to CLIProxyAPI usage')
 
-      await this.drainQueue(() => subClosed || this.stopped)
+      await this.drainQueue(() => subClosed || this.stopped || id !== this.runId)
       this.backoffMs = this.options.initialBackoffMs ?? INITIAL_BACKOFF_MS
       await closed
-      this.status.lastError = closeErr ? closeErr.message : 'connection closed'
+      if (id === this.runId) {
+        this.status.lastError = this.sanitizeError(closeErr ? closeErr.message : 'connection closed')
+      }
     } catch (err) {
       if (err instanceof AuthError) authFailed = true
-      this.status.lastError = closeErr ? closeErr.message : (err as Error).message
+      if (id === this.runId) {
+        this.status.authFailed = authFailed
+        this.status.lastError = authFailed
+          ? (err as Error).message
+          : this.sanitizeError(closeErr ? closeErr.message : (err as Error).message)
+      }
     } finally {
-      this.activeDrain?.close()
-      this.activeDrain = undefined
+      if (this.activeSub === sub) {
+        this.activeSub = undefined
+      }
       sub.close()
-      if (this.activeSub === sub) this.activeSub = undefined
-      if (this.status.connected) this.status.downSince = Date.now()
-      this.status.connected = false
+      if (id === this.runId) {
+        if (this.status.connected) this.status.downSince = Date.now()
+        this.status.connected = false
+        this.settleHandshake()
+      }
     }
 
-    if (this.stopped) return
+    if (this.stopped || id !== this.runId) return
     if (authFailed) {
       console.error(
         `[collector] authentication failed (${this.status.lastError}); stopping retries to avoid proxy IP ban`,
@@ -169,7 +262,7 @@ export class CliproxyCollector {
     console.warn(`[collector] disconnected (${this.status.lastError}); retrying in ${this.backoffMs / 1000}s`)
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined
-      void this.run()
+      void this.run(id)
     }, this.backoffMs)
     this.backoffMs = Math.min(this.backoffMs * 2, maxBackoffMs)
   }
@@ -179,7 +272,9 @@ export class CliproxyCollector {
       await conn.commandWithTimeout(timeoutMs, 'AUTH', this.options.managementKey)
     } catch (err) {
       if (err instanceof RespError) {
-        throw new AuthError(err.message)
+        // Fixed message so upstream error text can never echo CPA_MANAGEMENT_KEY
+        // into browser-readable status responses.
+        throw new AuthError('Authentication failed: check CPA_MANAGEMENT_KEY')
       }
       throw err
     }
@@ -187,35 +282,52 @@ export class CliproxyCollector {
 
   // Records published while nobody was subscribed wait in the queue.
   private async drainQueue(isCancelled: () => boolean) {
-    // Flush any retained rows before popping new records from the proxy.
-    if (this.pendingRows.length > 0) {
-      const flushed = this.flushPendingRows()
-      if (flushed) console.log(`[collector] flushed ${flushed} retained queued records`)
+    // Wait for any earlier drain's in-flight LPOP to finish and persist before
+    // opening a new drain socket.
+    if (this.drainPromise) {
+      await this.drainPromise.catch(() => {})
     }
     if (isCancelled()) return
 
-    const timeoutMs = this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS
-    const conn = new RespConnection()
-    this.activeDrain = conn
-    try {
-      await conn.connect(this.options.host, this.options.port, timeoutMs)
-      if (isCancelled()) return
-      await this.authenticate(conn, timeoutMs)
-      let drained = 0
-      for (;;) {
-        if (isCancelled()) break
-        const batch = await conn.commandWithTimeout(timeoutMs, 'LPOP', CHANNEL, DRAIN_BATCH)
-        if (!Array.isArray(batch) || batch.length === 0) break
-        const rows = this.parseBatch(batch)
-        if (rows.length === 0) continue
-        // Retain popped rows until the transaction commits so SQLITE_BUSY never loses them.
-        this.retainRows(rows)
-        drained += this.flushPendingRows()
+    const runDrain = async () => {
+      // Flush any retained rows before popping new records from the proxy.
+      if (this.pendingRows.length > 0) {
+        const flushed = this.flushPendingRows()
+        if (flushed) console.log(`[collector] flushed ${flushed} retained queued records`)
       }
-      if (drained) console.log(`[collector] drained ${drained} queued records`)
+      if (isCancelled()) return
+
+      const timeoutMs = this.options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS
+      const conn = new RespConnection()
+      this.activeDrain = conn
+      try {
+        await conn.connect(this.options.host, this.options.port, timeoutMs)
+        if (isCancelled()) return
+        await this.authenticate(conn, timeoutMs)
+        let drained = 0
+        for (;;) {
+          if (isCancelled()) break
+          const batch = await conn.commandWithTimeout(timeoutMs, 'LPOP', CHANNEL, DRAIN_BATCH)
+          if (!Array.isArray(batch) || batch.length === 0) break
+          const rows = this.parseBatch(batch)
+          if (rows.length === 0) continue
+          // Retain popped rows until the transaction commits so SQLITE_BUSY never loses them.
+          this.retainRows(rows)
+          drained += this.flushPendingRows()
+        }
+        if (drained) console.log(`[collector] drained ${drained} queued records`)
+      } finally {
+        conn.close()
+        if (this.activeDrain === conn) this.activeDrain = undefined
+      }
+    }
+
+    const promise = runDrain()
+    this.drainPromise = promise
+    try {
+      await promise
     } finally {
-      conn.close()
-      if (this.activeDrain === conn) this.activeDrain = undefined
+      if (this.drainPromise === promise) this.drainPromise = undefined
     }
   }
 

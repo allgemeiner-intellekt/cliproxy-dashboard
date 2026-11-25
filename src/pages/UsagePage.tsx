@@ -2,11 +2,12 @@
 // totals, breakdown), styled like the rest of this dashboard.
 
 import { ChevronRight, LoaderCircle, Pencil, RotateCcw } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProviderMark } from '../components/ProviderMark'
 import { UsageChart, type ChartGroup } from '../components/UsageChart'
 import { PageHead, Segmented } from '../components/ui'
 import { bucketLabel } from '../lib/chart'
+import { pollIntervalMs, resolveTimeZone, useDisplayPrefs } from '../lib/prefs'
 import {
   byProviderOrder,
   clearDeviceName,
@@ -29,8 +30,6 @@ import { isAbort, usePoll } from '../lib/usePoll'
 
 type Metric = 'cost' | 'tokens'
 type BreakdownKind = 'model' | 'day' | 'machine' | 'account'
-
-const REFRESH_EVERY_MS = 30e3
 
 const RANGE_OPTIONS: [Range, string][] = [
   ['24h', '24 hours'],
@@ -313,7 +312,7 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
             const tokens = providers.reduce((n, t) => n + (b.providers[t]?.tokens ?? 0), 0)
             return (
               <tr key={String(b.key)}>
-                <td className="mono">{bucketLabel(b.key, true)}</td>
+                <td className="mono">{bucketLabel(b.key, true, summary.timeZone)}</td>
                 {providers.map((t) => (
                   <td key={t} className="mono num faint utoolcol">
                     {!b.providers[t] ? '—' : metric === 'cost' ? formatUsd(b.providers[t].costMicros) : formatTokens(b.providers[t].tokens)}
@@ -415,8 +414,10 @@ function UsageSkeleton() {
   )
 }
 
-export function UsagePage() {
+export function UsagePage({ refreshTick = 0 }: { refreshTick?: number } = {}) {
   const [prefs, setPrefs] = usePrefs()
+  const [displayPrefs] = useDisplayPrefs()
+  const tz = resolveTimeZone(displayPrefs.timeZone)
   // Results are kept with the range they were requested for, so a switch shows
   // the old numbers as stale (not as the new range) until the new ones arrive.
   const [data, setData] = useState<{ range: Range; summary: UsageSummary } | null>(null)
@@ -428,7 +429,7 @@ export function UsagePage() {
       const range = prefs.range
       setBusy(true)
       try {
-        const summary = await getUsage(range, signal)
+        const summary = await getUsage(range, signal, tz)
         if (signal.aborted) return
         setData({ range, summary })
         setError(null)
@@ -440,9 +441,17 @@ export function UsagePage() {
         if (!signal.aborted) setBusy(false)
       }
     },
-    [prefs.range],
+    [prefs.range, tz],
   )
-  const refresh = usePoll(load, REFRESH_EVERY_MS)
+  const refresh = usePoll(load, pollIntervalMs(displayPrefs.pollInterval))
+
+  const prevTick = useRef(refreshTick)
+  useEffect(() => {
+    if (refreshTick !== prevTick.current) {
+      prevTick.current = refreshTick
+      refresh()
+    }
+  }, [refreshTick, refresh])
 
   const summary = data?.summary ?? null
   const failed = error?.range === prefs.range ? error.message : null

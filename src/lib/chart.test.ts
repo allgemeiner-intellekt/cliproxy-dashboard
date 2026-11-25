@@ -50,10 +50,16 @@ describe('labels', () => {
     expect(weekdayLabel('2026-11-24')).toBe('Tue')
   })
 
-  test('hour keys format in local time', () => {
+  test('hour keys format in local time and respect an explicit reporting time zone', () => {
     const key = new Date(2026, 10, 24, 21).getTime()
     expect(bucketLabel(key)).toBe('9 PM')
     expect(bucketLabel(key, true)).toBe('Tue, Nov 24, 9 PM')
+
+    const utcInstant = Date.parse('2026-11-24T08:00:00Z')
+    expect(bucketLabel(utcInstant, false, 'UTC')).toBe('8 AM')
+    expect(bucketLabel(utcInstant, true, 'UTC')).toBe('Tue, Nov 24, 8 AM')
+    expect(bucketLabel(utcInstant, false, 'America/Los_Angeles')).toBe('12 AM')
+    expect(bucketLabel(utcInstant, true, 'America/Los_Angeles')).toBe('Tue, Nov 24, 12 AM')
   })
 })
 

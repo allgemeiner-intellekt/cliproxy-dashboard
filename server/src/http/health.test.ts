@@ -7,7 +7,7 @@ import { COLLECTOR_DOWN_MS, collectorDown, createApp } from './app'
 
 const now = Date.UTC(2026, 10, 24, 12)
 const status = (s: Partial<CollectorStatus>): CollectorStatus => ({
-  connected: false, since: null, downSince: null, lastRecordAt: null, stored: 0, lastError: null, ...s,
+  connected: false, authFailed: false, since: null, downSince: null, lastRecordAt: null, stored: 0, lastError: null, ...s,
 })
 
 describe('collectorDown', () => {

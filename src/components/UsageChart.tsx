@@ -176,7 +176,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
               'aria-valuemin': 1,
               'aria-valuemax': count,
               'aria-valuenow': selected + 1,
-              'aria-valuetext': describeBucket(bucketLabel(summary.series[selected].key, true), lines, selected, format),
+              'aria-valuetext': describeBucket(bucketLabel(summary.series[selected].key, true, summary.timeZone), lines, selected, format),
             })}
         onKeyDown={onKeyDown}
         onFocus={(e) => {
@@ -237,7 +237,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
         )}
         {hovered && hover !== null && (
           <div className="tooltip" aria-hidden style={{ left: Math.min(x(hover) + 12, width - 200) }}>
-            <div className="tooltip-title">{bucketLabel(hovered.key, true)}</div>
+            <div className="tooltip-title">{bucketLabel(hovered.key, true, summary.timeZone)}</div>
             {lines.map((l) => (
               <div key={l.id} className="tooltip-row">
                 <span className="tooltip-key" style={{ background: l.color }} />
@@ -263,7 +263,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
       ) : (
         <div className="uchart-x mono">
           {labels.map((i) => (
-            <span key={i}>{bucketLabel(summary.series[i].key)}</span>
+            <span key={i}>{bucketLabel(summary.series[i].key, false, summary.timeZone)}</span>
           ))}
         </div>
       )}

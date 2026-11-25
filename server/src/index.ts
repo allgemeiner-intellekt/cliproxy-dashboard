@@ -39,7 +39,14 @@ const tailnet = new Tailnet(db)
 tailnet.start()
 
 const app = new Hono()
-app.route('/', createApp(db, collector, prices, tailnet, { allowedHosts: env.allowedHosts }))
+app.route(
+  '/',
+  createApp(db, collector, prices, tailnet, {
+    allowedHosts: env.allowedHosts,
+    dbPath: env.databasePath,
+    listenAddress: `${env.host}:${env.port}`,
+  }),
+)
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404))
 app.all('/v0/*', (c) => c.json({ error: 'Not found' }, 404))
 if (existsSync(env.staticDir)) {

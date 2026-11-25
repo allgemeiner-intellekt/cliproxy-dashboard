@@ -1,14 +1,23 @@
-import { useCallback, useState } from 'react'
+import { Settings } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Logo } from './components/Logo'
+import { SettingsModal, type SettingsPane } from './components/SettingsModal'
 import { ThemeMenu } from './components/ThemeMenu'
 import { ErrorBoundary, Toaster } from './components/ui'
+import { pollIntervalMs, useDisplayPrefs } from './lib/prefs'
 import { getHealth, type Health } from './lib/usage'
 import { isAbort, usePoll } from './lib/usePoll'
 import { UsagePage } from './pages/UsagePage'
 
-const HEALTH_EVERY_MS = 30e3
-
-function CollectorStatus() {
+function CollectorStatus({
+  everyMs,
+  refreshTick,
+  onOpenConnection,
+}: {
+  everyMs: number
+  refreshTick: number
+  onOpenConnection: () => void
+}) {
   const [health, setHealth] = useState<Health | null>(null)
   const [unreachable, setUnreachable] = useState(false)
 
@@ -23,28 +32,46 @@ function CollectorStatus() {
       setUnreachable(true)
     }
   }, [])
-  usePoll(check, HEALTH_EVERY_MS)
+  const refresh = usePoll(check, everyMs)
+
+  const prevTick = useRef(refreshTick)
+  useEffect(() => {
+    if (refreshTick !== prevTick.current) {
+      prevTick.current = refreshTick
+      refresh()
+    }
+  }, [refreshTick, refresh])
 
   if (unreachable) {
     return (
-      <span className="status-pill mono" title="Cannot reach usage server">
+      <button
+        type="button"
+        className="status-pill-btn mono"
+        title="Cannot reach usage server"
+        onClick={onOpenConnection}
+      >
         <span className="dot bad" />
         Server offline
-      </span>
+      </button>
     )
   }
 
   if (!health) return null
 
-  const { connected, lastError } = health.collector
+  const { connected, authFailed, lastError } = health.collector
+  const dotClass = connected ? 'dot good' : authFailed ? 'dot bad' : 'dot warn'
+  const label = connected ? 'Live' : authFailed ? 'Auth error' : 'Disconnected'
+
   return (
-    <span
-      className="status-pill mono"
+    <button
+      type="button"
+      className="status-pill-btn mono"
       title={connected ? 'Subscribed to CLIProxyAPI usage stream' : (lastError ?? 'Collector disconnected')}
+      onClick={onOpenConnection}
     >
-      <span className={connected ? 'dot good' : 'dot warn'} />
-      {connected ? 'Live' : 'Disconnected'}
-    </span>
+      <span className={dotClass} />
+      {label}
+    </button>
   )
 }
 
@@ -57,6 +84,18 @@ export default function App() {
 }
 
 function Shell() {
+  const [prefs] = useDisplayPrefs()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsPane, setSettingsPane] = useState<SettingsPane>('connection')
+  const [refreshTick, setRefreshTick] = useState(0)
+
+  const openSettings = useCallback((pane: SettingsPane) => {
+    setSettingsPane(pane)
+    setSettingsOpen(true)
+  }, [])
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const handleDataChanged = useCallback(() => setRefreshTick((n) => n + 1), [])
+
   return (
     <div className="shell">
       <header className="header">
@@ -66,14 +105,34 @@ function Shell() {
             CLIProxy Usage
           </div>
           <div className="header-actions">
-            <CollectorStatus />
+            <CollectorStatus
+              everyMs={pollIntervalMs(prefs.pollInterval)}
+              refreshTick={refreshTick}
+              onOpenConnection={() => openSettings('connection')}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Settings"
+              aria-pressed={settingsOpen}
+              title="Settings"
+              onClick={() => openSettings('connection')}
+            >
+              <Settings size={14} aria-hidden />
+            </button>
             <ThemeMenu />
           </div>
         </div>
       </header>
       <main className="content">
-        <UsagePage />
+        <UsagePage refreshTick={refreshTick} />
       </main>
+      <SettingsModal
+        open={settingsOpen}
+        initialPane={settingsPane}
+        onClose={closeSettings}
+        onDataChanged={handleDataChanged}
+      />
       <Toaster />
     </div>
   )
