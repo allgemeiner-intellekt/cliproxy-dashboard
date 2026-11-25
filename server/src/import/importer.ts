@@ -46,18 +46,19 @@ export function importTranscripts(db: Db, prices: PriceBook, files: TranscriptFi
 
   db.transaction((tx) => {
     for (const record of files.flatMap(parseFile)) {
-      // Before dedup: a copy with a bad clock mustn't claim the key of a valid one.
+      // Eligibility before dedup: a copy that is skipped (bad clock, or after
+      // the cutoff) mustn't claim the key of an eligible copy.
       if (!isPlausibleTimestamp(record.timestampMs)) {
         result.invalidTimestamp++
+        continue
+      }
+      if (record.timestampMs >= cutoffMs) {
+        result.afterCutoff++
         continue
       }
       // Claude repeats a message's usage across lines; keep the first.
       if (seen.has(record.key)) continue
       seen.add(record.key)
-      if (record.timestampMs >= cutoffMs) {
-        result.afterCutoff++
-        continue
-      }
 
       const tokens = { input: record.uncached, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite, output: record.output }
       const price = prices.lookup(record.model)

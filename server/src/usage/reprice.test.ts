@@ -33,14 +33,15 @@ describe('repriceMissing', () => {
     db.insert(requests)
       .values([
         row('unpriced'),
-        row('half', { costMicros: 5, cacheSavingsMicros: null }),
+        row('half', { costMicros: 5, cacheSavingsMicros: null, pricedAs: 'old-table' }),
         row('priced', { costMicros: 42, cacheSavingsMicros: 7, pricedAs: 'manual' }),
       ])
       .run()
     repriceMissing(db, prices)
     const byId = Object.fromEntries(db.select().from(requests).all().map((r) => [r.id, r]))
     expect(byId.unpriced).toMatchObject({ costMicros: 1_100_000, cacheSavingsMicros: 900_000, pricedAs: 'gpt-6.1-sol' })
-    expect(byId.half).toMatchObject({ costMicros: 1_100_000, cacheSavingsMicros: 900_000 })
+    // Only savings are filled in: a stored cost (and what priced it) is final.
+    expect(byId.half).toMatchObject({ costMicros: 5, cacheSavingsMicros: 900_000, pricedAs: 'old-table' })
     // Already priced rows keep their stored cost, even if rates change later.
     expect(byId.priced).toMatchObject({ costMicros: 42, cacheSavingsMicros: 7, pricedAs: 'manual' })
   })

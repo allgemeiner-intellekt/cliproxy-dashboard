@@ -80,10 +80,46 @@ describe('parseCodexLine', () => {
     expect(records.map((r) => r.model)).toEqual(['gpt-a', 'gpt-b'])
   })
 
-  test('an unchanged re-emitted token_count is counted once', () => {
+  // token_count with a cumulative total, as current Codex writes it.
+  const counted = (timestamp: string, usage: Record<string, number>, total: Record<string, number>) =>
+    JSON.stringify({ type: 'event_msg', timestamp, payload: { type: 'token_count', info: { last_token_usage: usage, total_token_usage: total } } })
+
+  test('a re-emitted token_count (same cumulative total) is counted once', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const records = run([
+      context('m'),
+      counted('2025-06-01T00:00:01Z', usage, { input_tokens: 5, output_tokens: 5 }),
+      counted('2025-06-01T00:00:02Z', usage, { input_tokens: 5, output_tokens: 5 }), // re-emit
+      counted('2025-06-01T00:00:03Z', { input_tokens: 7, output_tokens: 1 }, { input_tokens: 12, output_tokens: 6 }),
+    ])
+    expect(records.map((r) => [r.timestampMs, r.uncached])).toEqual([
+      [Date.UTC(2025, 5, 1, 0, 0, 1), 5],
+      [Date.UTC(2025, 5, 1, 0, 0, 3), 7],
+    ])
+  })
+
+  test('two real requests with identical usage are both counted (the total advances)', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const records = run([
+      context('m'),
+      counted('2025-06-01T00:00:01Z', usage, { input_tokens: 5, output_tokens: 5 }),
+      counted('2025-06-01T00:00:02Z', usage, { input_tokens: 10, output_tokens: 10 }),
+    ])
+    expect(records).toHaveLength(2)
+    expect(new Set(records.map((r) => r.key)).size).toBe(2)
+  })
+
+  test('rollouts without a total fall back to comparing the usage itself', () => {
     const usage = { input_tokens: 5, output_tokens: 5 }
     const records = run([context('m'), tokens('2025-06-01T00:00:01Z', usage), tokens('2025-06-01T00:00:02Z', usage), tokens('2025-06-01T00:00:03Z', { ...usage, output_tokens: 6 })])
-    expect(records).toHaveLength(2)
+    expect(records.map((r) => r.output)).toEqual([5, 6])
+  })
+
+  test('the key does not depend on the total, so earlier imports still match', () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const [withTotal] = run([meta({ id: 'S' }), context('m'), counted('2025-06-01T00:00:01Z', usage, { input_tokens: 99, output_tokens: 99 })])
+    const [without] = run([meta({ id: 'S' }), context('m'), tokens('2025-06-01T00:00:01Z', usage)])
+    expect(withTotal.key).toBe(without.key)
   })
 
   test('all-zero usage is skipped', () => {

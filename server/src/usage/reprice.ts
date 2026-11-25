@@ -24,12 +24,14 @@ export function repriceMissing(db: Db, prices: PriceBook) {
         cacheWrite: row.cacheWriteTokens,
         output: row.outputTokens,
       }
+      // A stored cost is final: rows that only lack savings (from before that
+      // column existed) get savings, never a recomputed cost.
+      const fill =
+        row.costMicros === null
+          ? { costMicros: costOf(tokens, price.rates), cacheSavingsMicros: cacheSavingsOf(tokens, price.rates), pricedAs: price.pricedAs }
+          : { cacheSavingsMicros: cacheSavingsOf(tokens, price.rates) }
       tx.update(requests)
-        .set({
-          costMicros: costOf(tokens, price.rates),
-          cacheSavingsMicros: cacheSavingsOf(tokens, price.rates),
-          pricedAs: price.pricedAs,
-        })
+        .set(fill)
         .where(eq(requests.id, row.id))
         .run()
       updated++

@@ -126,18 +126,24 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
   }
 
   if (payload.type !== 'token_count') return null
-  const last = obj(obj(payload.info)?.last_token_usage)
+  const info = obj(payload.info)
+  const last = obj(info?.last_token_usage)
   const timestampMs = timestampOf(record.timestamp)
   if (!last || timestampMs === null || !state.model) return null
 
+  // Identifies this request in the key (kept as before so re-imports match).
   const signature = JSON.stringify(last)
+  // A re-emit repeats the cumulative total; two real requests with the same
+  // usage advance it. Older rollouts without a total fall back to the usage.
+  const total = obj(info?.total_token_usage)
+  const progress = total ? `total:${JSON.stringify(total)}` : signature
   // A record with a bad clock is returned for the importer to count and
   // reject, but must not touch dedup or fork state: it would hide the valid
   // copy that follows.
   if (isPlausibleTimestamp(timestampMs)) {
     // Codex re-emits unchanged token_count events on some stream boundaries.
-    if (signature === state.lastSignature) return null
-    state.lastSignature = signature
+    if (progress === state.lastSignature) return null
+    state.lastSignature = progress
 
     if (state.suppressingForkCopies) {
       if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {

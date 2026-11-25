@@ -79,6 +79,20 @@ describe('importTranscripts', () => {
     expect(result).toMatchObject({ imported: 1, afterCutoff: 2, cutoffMs: live })
   })
 
+  test('a copy at or after the cutoff does not hide an eligible copy of the same message', () => {
+    const live = Date.UTC(2025, 5, 1, 12)
+    for (const order of ['late-first', 'early-first']) {
+      const { db, prices } = setup()
+      liveRow(db, live)
+      const early = claudeLine('same', '2025-06-01T11:00:00Z')
+      const late = claudeLine('same', '2025-06-01T12:00:00Z')
+      const result = importTranscripts(db, prices, files(...(order === 'late-first' ? [late, early] : [early, late])), '127.0.0.1')
+      expect(result).toMatchObject({ imported: 1, afterCutoff: 1 })
+      const stored = db.select().from(requests).all().filter((r) => r.source === 'claude-code-log')
+      expect(stored.map((r) => r.occurredAt.getTime())).toEqual([Date.UTC(2025, 5, 1, 11)])
+    }
+  })
+
   test('without live records the cutoff is now', () => {
     const { db, prices } = setup()
     const before = Date.now()

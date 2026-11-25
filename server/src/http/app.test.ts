@@ -179,7 +179,8 @@ describe('routes', () => {
     const { app: a } = app()
     expect((await get(a, '/api/usage?range=1y')).status).toBe(400)
     const body = (await (await get(a, '/api/usage')).json()) as { series: unknown[]; totals: { records: number } }
-    expect(body).toMatchObject({ range: '30d', bucket: 'day', timeZone: 'UTC' })
+    // Without ?tz the server's own zone applies; zone handling is tested below.
+    expect(body).toMatchObject({ range: '30d', bucket: 'day' })
     expect(body.series).toHaveLength(30)
   })
 
@@ -200,8 +201,11 @@ describe('routes', () => {
   })
 
   test('/api/import attributes history to the forwarded client', async () => {
-    const res = await app().app.request('/api/import', json('POST', { files: [] }, { 'x-forwarded-for': '100.64.0.5, 10.0.0.1' }))
-    expect(await res.json()).toMatchObject({ machineIp: '100.64.0.5' })
+    const { app: a, db } = app()
+    const files = [{ tool: 'claude-code', lines: [claudeLine('2025-06-01T00:00:00Z', 'fwd')] }]
+    const res = await a.request('/api/import', json('POST', { files }, { 'x-forwarded-for': '100.64.0.5, 10.0.0.1' }))
+    expect(await res.json()).toMatchObject({ machineIp: '100.64.0.5', imported: 1 })
+    expect(db.select().from(requests).all().map((r) => r.clientIp)).toEqual(['100.64.0.5'])
     const direct = await app().app.request('/api/import', json('POST', { files: [] }))
     expect(await direct.json()).toMatchObject({ machineIp: '127.0.0.1' })
   })

@@ -57,7 +57,7 @@ function parseCommands(buf: Buffer): { cmds: string[][]; rest: Buffer } {
 
 type Handler = (cmd: string[], socket: Socket) => void
 
-async function startFakeResp(onCommand: Handler, listenPort = 0): Promise<{ server: Server; port: number; sockets: Socket[] }> {
+async function startFakeResp(onCommand: Handler): Promise<{ server: Server; port: number; sockets: Socket[] }> {
   const sockets: Socket[] = []
   const server = createServer((socket) => {
     sockets.push(socket)
@@ -69,7 +69,7 @@ async function startFakeResp(onCommand: Handler, listenPort = 0): Promise<{ serv
       for (const cmd of cmds) onCommand(cmd, socket)
     })
   })
-  await new Promise<void>((resolve) => server.listen(listenPort, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('failed to bind server')
   return { server, port: address.port, sockets }
@@ -587,35 +587,47 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
 })
 
 describe('T3: live delivery and reconnection', () => {
-  // A fake proxy with a usage queue and a way to publish to subscribers.
-  async function fakeProxy() {
+  // A fake proxy that, like CLIProxyAPI, serves only the "usage" channel and
+  // queue, and logs the order of subscriptions and pops.
+  async function fakeProxy(options: { dropFirstConnections?: number } = {}) {
     const queue: string[] = []
-    const subscribers: { socket: Socket; channel: string }[] = []
-    let subscribes = 0
+    const events: string[] = []
+    const subscribers: Socket[] = []
+    let toDrop = options.dropFirstConnections ?? 0
     const fake = await startFakeResp((cmd, socket) => {
       const op = cmd[0].toUpperCase()
       if (op === 'AUTH') socket.write('+OK\r\n')
       else if (op === 'SUBSCRIBE') {
-        subscribes++
-        subscribers.push({ socket, channel: cmd[1] })
-        socket.write(encodeResp(['subscribe', cmd[1], '1']))
-      } else if (op === 'LPOP') socket.write(encodeResp(queue.splice(0, Number(cmd[2] ?? 1))))
-      else if (op === 'PING') socket.write('+PONG\r\n')
+        if (cmd[1] !== 'usage') return void socket.write(`-ERR unknown channel ${cmd[1]}\r\n`)
+        subscribers.push(socket)
+        events.push('subscribed')
+        socket.write(encodeResp(['subscribe', 'usage', '1']))
+      } else if (op === 'LPOP') {
+        events.push('lpop')
+        socket.write(cmd[1] === 'usage' ? encodeResp(queue.splice(0, Number(cmd[2] ?? 1))) : '$-1\r\n')
+      } else if (op === 'PING') socket.write('+PONG\r\n')
+    })
+    fake.server.prependListener('connection', (socket: Socket) => {
+      if (toDrop > 0) {
+        toDrop--
+        socket.destroy()
+      }
     })
     cleanups.push(() => {
       for (const s of fake.sockets) s.destroy()
       fake.server.close()
     })
-    const live = () => subscribers.filter((s) => !s.socket.destroyed)
+    const live = () => subscribers.filter((s) => !s.destroyed)
     return {
       port: fake.port,
       queue,
-      subscribes: () => subscribes,
+      events,
+      subscribes: () => events.filter((e) => e === 'subscribed').length,
       publish: (payload: string) => {
-        for (const s of live()) s.socket.write(encodeResp(['message', s.channel, payload]))
+        for (const s of live()) s.write(encodeResp(['message', 'usage', payload]))
       },
       dropSubscribers: () => {
-        for (const s of live()) s.socket.destroy()
+        for (const s of live()) s.destroy()
       },
     }
   }
@@ -627,71 +639,61 @@ describe('T3: live delivery and reconnection', () => {
     return { db, collector }
   }
 
+  const ids = (db: ReturnType<typeof openDb>) => db.select().from(requests).all().map((r) => r.id.split(':')[1]).sort()
+
   test('stores live pub/sub records and counts a redelivered one once', async () => {
     const proxy = await fakeProxy()
     const { db, collector } = collectorFor(proxy.port)
     collector.start()
-    await waitFor(() => collector.status.connected)
+    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected)
 
     proxy.publish(makeRecord('live-1'))
     proxy.publish(makeRecord('live-1'))
     proxy.publish('{"support_refresh":true}')
     proxy.publish(makeRecord('live-2'))
-    await waitFor(() => collector.status.stored === 2)
-    await Bun.sleep(50)
+    // Same socket, so once this lands everything before it was handled.
+    proxy.publish(makeRecord('barrier'))
+    await waitFor(() => ids(db).includes('barrier'))
 
-    expect(db.select().from(requests).all().map((r) => r.id).sort()).toEqual([
-      'cliproxy:live-1:2026-11-24T12:00:00.000Z',
-      'cliproxy:live-2:2026-11-24T12:00:00.000Z',
-    ])
-    expect(collector.status.stored).toBe(2)
+    expect(ids(db)).toEqual(['barrier', 'live-1', 'live-2'])
+    expect(collector.status.stored).toBe(3)
     expect(collector.status.lastRecordAt).not.toBeNull()
   })
 
-  test('after a dropped connection it resubscribes and drains what queued meanwhile', async () => {
+  test('after a dropped connection it resubscribes before draining what queued meanwhile', async () => {
     const proxy = await fakeProxy()
     const { db, collector } = collectorFor(proxy.port)
     collector.start()
-    await waitFor(() => collector.status.connected)
+    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected)
     proxy.publish(makeRecord('before'))
     await waitFor(() => collector.status.stored === 1)
 
-    // Records produced while disconnected wait in the proxy's queue.
-    proxy.queue.push(makeRecord('queued-1'), makeRecord('queued-2'))
+    // Records produced while disconnected wait in the proxy's queue, more
+    // than one LPOP batch's worth.
+    const queued = Array.from({ length: 1234 }, (_, i) => `queued-${String(i).padStart(4, '0')}`)
+    proxy.queue.push(...queued.map((id) => makeRecord(id)))
+    const eventsBefore = proxy.events.length
     proxy.dropSubscribers()
-    await waitFor(() => !collector.status.connected)
-    await waitFor(() => proxy.subscribes() === 2 && collector.status.connected)
-    await waitFor(() => collector.status.stored === 3)
+    await waitFor(() => proxy.subscribes() === 2)
+    await waitFor(() => collector.status.stored === 1 + queued.length, 5000)
+
+    // Subscribing first means nothing published during the drain is missed.
+    const after = proxy.events.slice(eventsBefore)
+    expect(after.indexOf('subscribed')).toBeGreaterThanOrEqual(0)
+    expect(after.indexOf('subscribed')).toBeLessThan(after.indexOf('lpop'))
+    expect(proxy.queue).toHaveLength(0)
 
     proxy.publish(makeRecord('after'))
-    await waitFor(() => collector.status.stored === 4)
-    expect(db.select().from(requests).all()).toHaveLength(4)
-    expect(proxy.queue).toHaveLength(0)
+    await waitFor(() => collector.status.stored === 2 + queued.length)
+    expect(ids(db)).toEqual(['after', 'before', ...queued].sort())
   })
 
-  test('keeps retrying while the proxy is down, then connects', async () => {
-    // Reserve a port, then free it so the first attempts are refused.
-    const probe = createServer()
-    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
-    const port = (probe.address() as { port: number }).port
-    await new Promise<void>((resolve) => probe.close(() => resolve()))
-
-    const { collector } = collectorFor(port)
+  test('keeps retrying while the proxy refuses connections, then connects', async () => {
+    const proxy = await fakeProxy({ dropFirstConnections: 2 })
+    const { collector } = collectorFor(proxy.port)
     collector.start()
-    await waitFor(() => collector.status.lastError !== null)
-    expect(collector.status.connected).toBe(false)
-
-    const fake = await startFakeResp((cmd, socket) => {
-      const op = cmd[0].toUpperCase()
-      if (op === 'AUTH') socket.write('+OK\r\n')
-      else if (op === 'SUBSCRIBE') socket.write(encodeResp(['subscribe', cmd[1], '1']))
-      else if (op === 'LPOP') socket.write(encodeResp([]))
-    }, port)
-    cleanups.push(() => {
-      for (const s of fake.sockets) s.destroy()
-      fake.server.close()
-    })
     await waitFor(() => collector.status.connected, 3000)
+    expect(proxy.subscribes()).toBe(1)
     expect(collector.status.lastError).toBeNull()
   })
 })
