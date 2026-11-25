@@ -1,21 +1,25 @@
 import { Database } from 'bun:sqlite'
 import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import * as schema from './schema'
 
 export type Db = ReturnType<typeof openDb>
 
 // Opens (creating if needed) the SQLite database and applies pending migrations.
-export function openDb(path: string) {
-  const onDisk = path !== ':memory:'
+export function openDb(configuredPath: string) {
+  const onDisk = configuredPath !== ':memory:'
+  let path = configuredPath
   if (onDisk) {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    mkdirSync(dirname(configuredPath), { recursive: true, mode: 0o700 })
     // Create the file owner-only before SQLite does, so it never exists with
     // the default (often world-readable) mode. SQLite gives -wal/-shm the
     // database file's mode.
     if (!existsSync(path)) closeSync(openSync(path, 'a', 0o600))
+    // SQLite names -wal/-shm after the real file, so resolve symlinks and use
+    // that path for both opening and permissions.
+    path = realpathSync(path)
   }
   const sqlite = new Database(path, { create: true })
   sqlite.exec('PRAGMA busy_timeout = 5000;')

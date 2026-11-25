@@ -4,6 +4,8 @@
 // Ported from T3 Code (MIT, (c) 2026 T3 Tools Inc.),
 // apps/server/src/usage/usageTranscripts.ts, trimmed to what we store.
 
+import { isPlausibleTimestamp } from '../usage/timestamps'
+
 export type TranscriptRecord = {
   tool: 'claude-code' | 'codex'
   timestampMs: number
@@ -121,17 +123,22 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
   const timestampMs = timestampOf(record.timestamp)
   if (!last || timestampMs === null || !state.model) return null
 
-  // Codex re-emits unchanged token_count events on some stream boundaries.
   const signature = JSON.stringify(last)
-  if (signature === state.lastSignature) return null
-  state.lastSignature = signature
+  // A record with a bad clock is returned for the importer to count and
+  // reject, but must not touch dedup or fork state: it would hide the valid
+  // copy that follows.
+  if (isPlausibleTimestamp(timestampMs)) {
+    // Codex re-emits unchanged token_count events on some stream boundaries.
+    if (signature === state.lastSignature) return null
+    state.lastSignature = signature
 
-  if (state.suppressingForkCopies) {
-    if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {
-      state.forkAnchorMs = timestampMs
-      return null
+    if (state.suppressingForkCopies) {
+      if (timestampMs - state.forkAnchorMs < FORK_COPY_MAX_GAP_MS) {
+        state.forkAnchorMs = timestampMs
+        return null
+      }
+      state.suppressingForkCopies = false
     }
-    state.suppressingForkCopies = false
   }
 
   const input = int(last.input_tokens)

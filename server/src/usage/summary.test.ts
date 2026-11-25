@@ -119,8 +119,7 @@ describe('all-time window bounds (D5)', () => {
   test('days stay in order and contiguous', () => {
     const db = fixture([{ occurredAt: new Date(Date.UTC(2026, 8, 28)) }])
     const keys = usageSummary(db, 'all', 'UTC', now).series.map((s) => s.key)
-    expect(keys[0]).toBe('2026-09-28')
-    expect(keys).toHaveLength(17)
-    expect([...keys].sort()).toEqual(keys)
+    const expected = Array.from({ length: 17 }, (_, i) => new Date(Date.UTC(2026, 8, 28 + i)).toISOString().slice(0, 10))
+    expect(keys).toEqual(expected)
   })
 })

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { Hono } from 'hono'
 import { openDb } from '../db/client'
 import { requests } from '../db/schema'
 import { PriceBook } from '../usage/pricing'
@@ -12,8 +13,21 @@ function app(overrides: { collector?: object; allowedHosts?: string[] } = {}) {
   const collector = (overrides.collector ?? { status: { connected: true } }) as Deps[1]
   const tailnet = { syncedAt: null, lastError: null } as unknown as Deps[3]
   const prices = new PriceBook(db, '/nonexistent/prices.json')
-  return { db, app: createApp(db, collector, prices, tailnet, { allowedHosts: overrides.allowedHosts }) }
+  // Mounted the way index.ts mounts it, so sub-app middleware and handlers
+  // are exercised through the production routing.
+  const root = new Hono()
+  root.route('/', createApp(db, collector, prices, tailnet, { allowedHosts: overrides.allowedHosts }))
+  root.all('/api/*', (c) => c.json({ error: 'Not found' }, 404)) // as in index.ts
+  return { db, app: root }
 }
+
+const claudeLine = (timestamp: string, id: string) =>
+  JSON.stringify({
+    type: 'assistant',
+    timestamp,
+    sessionId: 's',
+    message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 1 } },
+  })
 
 const json = (method: string, body: unknown, headers: Record<string, string> = {}) => ({
   method,
@@ -56,13 +70,17 @@ describe('Host check (S1)', () => {
 describe('JSON-only writes (S3)', () => {
   test('cross-site simple requests are refused', async () => {
     const { app: a, db } = app()
+    // An import that would insert a row if the handler ran.
+    const files = [{ tool: 'claude-code', lines: [claudeLine('2025-06-01T00:00:00Z', 'm1')] }]
     for (const type of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
-      const res = await a.request('/api/import', json('POST', { files: [] }, { 'content-type': type }))
+      const res = await a.request('/api/import', json('POST', { files }, { 'content-type': type }))
       expect(res.status).toBe(415)
     }
+    expect(db.select().from(requests).all()).toHaveLength(0)
+    const ok = await a.request('/api/import', json('POST', { files }))
+    expect(await ok.json()).toMatchObject({ imported: 1 })
     const noType = await a.request('/api/devices/name', { method: 'DELETE', headers: { host: 'localhost' }, body: '{}' })
     expect(noType.status).toBe(415)
-    expect(db.select().from(requests).all()).toHaveLength(0)
   })
 
   test('JSON writes go through, with charset parameters', async () => {
@@ -109,17 +127,25 @@ describe('error handling (R6)', () => {
 })
 
 describe('import timestamps (D5)', () => {
-  const claudeLine = (timestamp: string, id: string) =>
-    JSON.stringify({
-      type: 'assistant',
-      timestamp,
-      sessionId: 's',
-      message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 1, output_tokens: 1 } },
-    })
-
   test('implausible timestamps are skipped and counted', async () => {
     const lines = [claudeLine('1000-01-01T00:00:00Z', 'a'), claudeLine('2999-01-01T00:00:00Z', 'b'), claudeLine('2025-06-01T00:00:00Z', 'c')]
     const res = await app().app.request('/api/import', json('POST', { files: [{ tool: 'claude-code', lines }] }))
     expect(await res.json()).toMatchObject({ imported: 1, invalidTimestamp: 2 })
+  })
+
+  test('a bad-clock copy does not hide the valid copy of the same record', async () => {
+    const claude = [claudeLine('1000-01-01T00:00:00Z', 'same'), claudeLine('2025-06-01T00:00:00Z', 'same')]
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const codexLine = (timestamp: string) => JSON.stringify({ type: 'event_msg', timestamp, payload: { type: 'token_count', info: { last_token_usage: usage } } })
+    const codex = [
+      JSON.stringify({ type: 'turn_context', timestamp: '2025-06-01T00:00:00Z', payload: { model: 'gpt-6.1-sol' } }),
+      codexLine('1000-01-01T00:00:00Z'),
+      codexLine('2025-06-01T00:00:01Z'),
+    ]
+    const res = await app().app.request(
+      '/api/import',
+      json('POST', { files: [{ tool: 'claude-code', lines: claude }, { tool: 'codex', lines: codex }] }),
+    )
+    expect(await res.json()).toMatchObject({ imported: 2, invalidTimestamp: 2 })
   })
 })

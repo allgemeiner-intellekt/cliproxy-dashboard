@@ -46,13 +46,14 @@ export function importTranscripts(db: Db, prices: PriceBook, files: TranscriptFi
 
   db.transaction((tx) => {
     for (const record of files.flatMap(parseFile)) {
-      // Claude repeats a message's usage across lines; keep the first.
-      if (seen.has(record.key)) continue
-      seen.add(record.key)
+      // Before dedup: a copy with a bad clock mustn't claim the key of a valid one.
       if (!isPlausibleTimestamp(record.timestampMs)) {
         result.invalidTimestamp++
         continue
       }
+      // Claude repeats a message's usage across lines; keep the first.
+      if (seen.has(record.key)) continue
+      seen.add(record.key)
       if (record.timestampMs >= cutoffMs) {
         result.afterCutoff++
         continue
