@@ -4,13 +4,17 @@
 // Subscription accounts aren't billed per token; this answers "what would
 // this usage have cost on the pay-as-you-go API".
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Db } from '../db/client'
 import { priceOverrides } from '../db/schema'
 
 const PRICE_TABLE_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const REFRESH_EVERY_MS = 24 * 3600e3
+// After a failed download, try again sooner than the daily refresh.
+const RETRY_AFTER_FAILURE_MS = 15 * 60e3
+// A stalled download (DNS black hole, captive portal) gives up after this.
+const FETCH_TIMEOUT_MS = 30e3
 
 // Micro-dollars per million tokens.
 export type Rates = {
@@ -69,27 +73,66 @@ export class PriceBook {
   // Called after each successful refresh, e.g. to reprice stored rows.
   onRefresh: () => void = () => {}
 
-  async start() {
+  private refreshing: Promise<boolean> | null = null
+  private timer?: ReturnType<typeof setTimeout>
+
+  // Loads overrides and the cached table from disk. Synchronous, so pricing
+  // works from the last good table before any download.
+  load() {
     this.loadOverrides()
     this.loadCache()
-    await this.refresh()
-    setInterval(() => this.refresh(), REFRESH_EVERY_MS)
   }
 
-  // Downloads the latest table; on failure keeps whatever is cached.
-  async refresh() {
+  // Loads what's on disk, then refreshes in the background: daily, or sooner
+  // after a failure. Never waits on the network.
+  start() {
+    this.load()
+    const tick = async () => {
+      const ok = await this.refresh()
+      this.timer = setTimeout(tick, ok ? REFRESH_EVERY_MS : RETRY_AFTER_FAILURE_MS)
+    }
+    void tick()
+  }
+
+  stop() {
+    clearTimeout(this.timer)
+  }
+
+  // Downloads the latest table; on failure keeps whatever is loaded. Resolves
+  // to whether it succeeded. Concurrent calls share one download.
+  refresh(timeoutMs = FETCH_TIMEOUT_MS): Promise<boolean> {
+    this.refreshing ??= this.download(timeoutMs).finally(() => {
+      this.refreshing = null
+    })
+    return this.refreshing
+  }
+
+  private async download(timeoutMs: number) {
+    let table: Record<string, LiteLlmEntry>
+    let text: string
     try {
-      const res = await fetch(PRICE_TABLE_URL)
+      const res = await fetch(PRICE_TABLE_URL, { signal: AbortSignal.timeout(timeoutMs) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const text = await res.text()
-      this.table = JSON.parse(text)
-      this.loadedAt = Date.now()
+      text = await res.text()
+      table = parsePriceTable(text)
+    } catch (err) {
+      console.warn(`[pricing] refresh failed, keeping ${this.loadedAt ? 'cached' : 'empty'} table: ${(err as Error).message}`)
+      return false
+    }
+    this.table = table
+    this.loadedAt = Date.now()
+    try {
       mkdirSync(dirname(this.cachePath), { recursive: true })
       writeFileSync(this.cachePath, text)
+    } catch (err) {
+      console.warn(`[pricing] could not write price cache: ${(err as Error).message}`)
+    }
+    try {
       this.onRefresh()
     } catch (err) {
-      console.warn(`[pricing] refresh failed, using cached table: ${(err as Error).message}`)
+      console.error(`[pricing] onRefresh failed: ${(err as Error).message}`)
     }
+    return true
   }
 
   loadOverrides() {
@@ -105,11 +148,18 @@ export class PriceBook {
   }
 
   private loadCache() {
+    let text: string
     try {
-      this.table = JSON.parse(readFileSync(this.cachePath, 'utf8'))
-      this.loadedAt = Date.now()
+      text = readFileSync(this.cachePath, 'utf8')
     } catch {
-      // no cache yet
+      return // no cache yet
+    }
+    try {
+      this.table = parsePriceTable(text)
+      // The table is as fresh as the download that wrote the cache.
+      this.loadedAt = statSync(this.cachePath).mtimeMs
+    } catch (err) {
+      console.warn(`[pricing] ignoring unreadable price cache: ${(err as Error).message}`)
     }
   }
 
@@ -158,6 +208,14 @@ export class PriceBook {
       },
     }
   }
+}
+
+// Parses LiteLLM's table, rejecting anything that isn't a JSON object (an
+// HTML error page, a truncated download) so it can't replace a good table.
+function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
+  const table: unknown = JSON.parse(text)
+  if (!table || typeof table !== 'object' || Array.isArray(table)) throw new Error('price table is not a JSON object')
+  return table as Record<string, LiteLlmEntry>
 }
 
 function rank(e: LiteLlmEntry) {

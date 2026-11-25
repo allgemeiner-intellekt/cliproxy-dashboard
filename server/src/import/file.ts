@@ -19,7 +19,9 @@ if (!path || !values.ip) {
 const { files } = JSON.parse(readFileSync(path, 'utf8')) as { files: TranscriptFile[] }
 const db = openDb(env.databasePath)
 const prices = new PriceBook(db, env.priceCachePath)
-await prices.start()
+// One-shot: wait (bounded) for a fresh table, else price from the cache.
+prices.load()
+await prices.refresh()
 
 const result = importTranscripts(db, prices, files, values.ip)
 console.log(

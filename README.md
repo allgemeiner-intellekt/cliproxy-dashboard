@@ -58,17 +58,17 @@ The server logs `[collector] subscribed to CLIProxyAPI usage` once it is receivi
 
 ## Configuration
 
-All configuration is environment variables, read from `.env.local` in the working directory (Bun loads it automatically) or the process environment. See [`.env.example`](.env.example).
+All configuration is environment variables, read from `.env.local` in the working directory (Bun loads it automatically) or the process environment. See [`.env.example`](.env.example). Values are checked at startup: an invalid one stops the server with a message listing every problem. Empty values count as unset.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `CPA_MANAGEMENT_KEY` | required | Plaintext management key (used only to subscribe to the usage queue) |
-| `CPA_TARGET` | `http://127.0.0.1:8317` | CLIProxyAPI base URL |
+| `CPA_TARGET` | `http://127.0.0.1:8317` | CLIProxyAPI base URL. Must be `http://`: the usage queue is read over a plaintext connection to this port. Without a port, `8317` is used |
 | `USAGE_SERVER_HOST` | `127.0.0.1` | Server listen address |
 | `USAGE_SERVER_PORT` | `5174` | Server listen port |
 | `TAILSCALE_BIN` | auto | Path to the `tailscale` CLI, used to name machines by their tailnet name |
 | `USAGE_DB_PATH` | `data/usage.db` | SQLite database |
-| `PRICE_CACHE_PATH` | `data/litellm-prices.json` | Cached LiteLLM price table |
+| `PRICE_CACHE_PATH` | `data/litellm-prices.json` | Cached LiteLLM price table. The server prices from it at startup and downloads a fresh copy in the background |
 | `DASHBOARD_DIST` | `dist` | Built frontend to serve |
 
 ## Deploy

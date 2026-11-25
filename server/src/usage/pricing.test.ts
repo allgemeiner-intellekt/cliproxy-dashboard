@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb } from '../db/client'
 import { PriceBook } from './pricing'
 
@@ -47,5 +50,81 @@ describe('reseller listings', () => {
       'xai/grok-code-fast-1': { litellm_provider: 'xai', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
     }
     expect(b.lookup('grok-code-fast-1')?.pricedAs).toBe('xai/grok-code-fast-1')
+  })
+})
+
+describe('price table loading', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
+
+  function tempCache(contents?: unknown) {
+    const dir = mkdtempSync(join(tmpdir(), 'pricing-test-'))
+    const path = join(dir, 'prices.json')
+    if (contents !== undefined) writeFileSync(path, JSON.stringify(contents))
+    return path
+  }
+
+  // A download that never answers until aborted, like a DNS black hole.
+  function stallingFetch() {
+    let calls = 0
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
+      calls++
+      return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))
+    }) as typeof fetch
+    return () => calls
+  }
+
+  test('start() prices from the cache without waiting for the download', () => {
+    stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.start()
+    try {
+      expect(b.lookup('muse-wonder-1.0')?.pricedAs).toBe('meta/muse-wonder-1.0')
+      expect(b.loadedAt).not.toBeNull()
+    } finally {
+      b.stop()
+    }
+  })
+
+  test('a stalled download times out and keeps the cached table', async () => {
+    stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.load()
+    expect(await b.refresh(50)).toBe(false)
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('a non-JSON response does not replace the table', async () => {
+    globalThis.fetch = (async () => new Response('<html>captive portal</html>')) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.load()
+    let refreshed = 0
+    b.onRefresh = () => refreshed++
+    expect(await b.refresh()).toBe(false)
+    expect(refreshed).toBe(0)
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('a good download replaces the table, writes the cache and notifies', async () => {
+    const next = { 'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const cache = tempCache()
+    const b = new PriceBook(openDb(':memory:'), cache)
+    b.load()
+    let refreshed = 0
+    b.onRefresh = () => refreshed++
+    expect(await b.refresh()).toBe(true)
+    expect(refreshed).toBe(1)
+    expect(b.lookup('claude-opus-5-5')?.rates.input).toBe(5_000_000)
+    expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(next)
+  })
+
+  test('concurrent refreshes share one download', async () => {
+    const calls = stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    await Promise.all([b.refresh(50), b.refresh(50)])
+    expect(calls()).toBe(1)
   })
 })

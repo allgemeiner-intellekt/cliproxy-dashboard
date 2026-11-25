@@ -14,10 +14,12 @@ import { repriceMissing } from './usage/reprice'
 
 const db = openDb(env.databasePath)
 
+// Prices from the cached table right away; the download runs in the
+// background so a slow network can't hold up collection or the API.
 const prices = new PriceBook(db, env.priceCachePath)
-await prices.start()
-repriceMissing(db, prices)
 prices.onRefresh = () => repriceMissing(db, prices)
+prices.start()
+repriceMissing(db, prices)
 
 const collector = new CliproxyCollector(db, prices, {
   host: env.proxyHost,
