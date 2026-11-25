@@ -12,7 +12,7 @@ const STATUS_TIMEOUT_MS = 10e3
 const LOOPBACK = ['127.0.0.1', '::1']
 
 // launchd starts us with a minimal PATH, so look in the usual install spots.
-const CLI_CANDIDATES = [
+const DEFAULT_CLI_CANDIDATES = [
   process.env.TAILSCALE_BIN,
   '/opt/homebrew/bin/tailscale',
   '/usr/local/bin/tailscale',
@@ -30,7 +30,7 @@ export class Tailnet {
 
   constructor(
     private db: Db,
-    private statusTimeoutMs = STATUS_TIMEOUT_MS,
+    private options: { timeoutMs?: number; cli?: string } = {},
   ) {}
 
   start() {
@@ -54,7 +54,7 @@ export class Tailnet {
   private async syncOnce() {
     let status: Status
     try {
-      status = await readStatus(this.statusTimeoutMs)
+      status = await readStatus(this.options.cli, this.options.timeoutMs ?? STATUS_TIMEOUT_MS)
     } catch (err) {
       this.lastError = (err as Error).message
       // Keep the names from the last good sync rather than wiping them; only
@@ -98,8 +98,8 @@ function nameOf(node: StatusNode) {
   return node.DNSName?.split('.')[0] || node.HostName || 'unknown'
 }
 
-async function readStatus(timeoutMs: number): Promise<Status> {
-  const cli = CLI_CANDIDATES.find((path) => existsSync(path))
+async function readStatus(cliPath: string | undefined, timeoutMs: number): Promise<Status> {
+  const cli = cliPath ?? DEFAULT_CLI_CANDIDATES.find((path) => existsSync(path))
   if (!cli) throw new Error('tailscale CLI not found')
   const text = await runBounded('tailscale status', [cli, 'status', '--json'], timeoutMs)
   const status: unknown = JSON.parse(text)
@@ -108,19 +108,51 @@ async function readStatus(timeoutMs: number): Promise<Status> {
   // treating that as "no devices" would wipe every name.
   const state = (status as Status).BackendState
   if (state !== 'Running') throw new Error(`tailscale is not running (state ${state ?? 'unknown'})`)
+  // The sync replaces every row, so only trust a well-formed snapshot.
+  const { Self, Peer } = status as Status
+  const peers = Peer ?? {}
+  if (!isNode(Self) || !isObject(peers) || !Object.values(peers).every(isNode)) {
+    throw new Error('tailscale status returned unexpected output')
+  }
   return status as Status
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const optional = (value: unknown, type: 'string' | 'boolean') => value === undefined || value === null || typeof value === type
+
+function isNode(value: unknown): value is StatusNode {
+  if (!isObject(value)) return false
+  const ips = value.TailscaleIPs
+  return (
+    optional(value.DNSName, 'string') &&
+    optional(value.HostName, 'string') &&
+    optional(value.OS, 'string') &&
+    optional(value.Online, 'boolean') &&
+    (ips === undefined || ips === null || (Array.isArray(ips) && ips.every((ip) => typeof ip === 'string')))
+  )
+}
+
 // Runs a command and returns its stdout, failing after timeoutMs no matter
-// what: the process is SIGKILLed (it can't ignore that) and the pipe is
-// abandoned, in case something it started still holds it open.
+// what. The command gets its own process group, which is SIGKILLed (that
+// can't be ignored) so a wrapper script's children die too, and the pipe is
+// abandoned in case anything still holds it open.
 async function runBounded(label: string, cmd: string[], timeoutMs: number): Promise<string> {
-  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'ignore' })
+  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore', detached: true })
+  const kill = () => {
+    try {
+      process.kill(-proc.pid, 'SIGKILL')
+    } catch {
+      proc.kill('SIGKILL') // no process group (e.g. Windows)
+    }
+  }
   const reader = proc.stdout.getReader()
   let timer: ReturnType<typeof setTimeout> | undefined
   const timedOut = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      proc.kill('SIGKILL')
+      kill()
       reader.cancel().catch(() => {})
       reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`))
     }, timeoutMs)

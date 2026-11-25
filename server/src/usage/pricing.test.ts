@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/client'
@@ -130,6 +130,28 @@ describe('price table loading', () => {
     expect(b.lookup('broken')).toBeNull()
     expect(b.lookup('half')).toBeNull()
     expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('an unusable first-party entry falls through to a reseller listing', async () => {
+    const next = {
+      'test-model': { litellm_provider: 'openai', input_cost_per_token: 'bad', output_cost_per_token: 1e-6 },
+      'reseller/test-model': { litellm_provider: 'azure', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+    }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('test-model')?.pricedAs).toBe('reseller/test-model')
+  })
+
+  test('a failed cache write keeps the previous cache intact', async () => {
+    const next = { 'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const cache = tempCache(TABLE)
+    mkdirSync(`${cache}.${process.pid}.tmp`) // the temp file can't be written
+    const b = new PriceBook(openDb(':memory:'), cache)
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('claude-opus-5-5')).not.toBeNull()
+    expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(TABLE)
   })
 
   test('stop() during a refresh schedules nothing afterwards', async () => {

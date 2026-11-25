@@ -102,6 +102,10 @@ function parseProxyTarget(value: string, problems: string[]) {
   // URL reads ":80" back as "" (the http default), so only a port that is
   // really absent falls back to CLIProxyAPI's default.
   const port = url.port ? Number(url.port) : hasExplicitPort(value) ? 80 : DEFAULT_PROXY_PORT
+  if (port < 1) {
+    problems.push('CPA_TARGET port must be from 1 to 65535')
+    return undefined
+  }
   // IPv6 hosts come back bracketed ("[::1]"); sockets want the bare address.
   return { host: url.hostname.replace(/^\[(.*)\]$/, '$1'), port }
 }

@@ -4,7 +4,7 @@
 // Subscription accounts aren't billed per token; this answers "what would
 // this usage have cost on the pay-as-you-go API".
 
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Db } from '../db/client'
 import { priceOverrides } from '../db/schema'
@@ -129,8 +129,21 @@ export class PriceBook {
     this.table = table
     this.loadedAt = Date.now()
     try {
+      // Write beside the cache and rename over it, so a failed or partial
+      // write never replaces the last good copy.
       mkdirSync(dirname(this.cachePath), { recursive: true })
-      writeFileSync(this.cachePath, text)
+      const tmp = `${this.cachePath}.${process.pid}.tmp`
+      try {
+        writeFileSync(tmp, text)
+        renameSync(tmp, this.cachePath)
+      } catch (err) {
+        try {
+          rmSync(tmp, { force: true })
+        } catch {
+          // best effort
+        }
+        throw err
+      }
     } catch (err) {
       console.warn(`[pricing] could not write price cache: ${(err as Error).message}`)
     }
@@ -233,11 +246,12 @@ function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
       const rate = value[field]
       if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) entry[field] = rate
     }
+    // Without both required rates an entry can't price anything; dropping it
+    // lets lookup fall through to another provider's listing of the model.
+    if (entry.input_cost_per_token == null || entry.output_cost_per_token == null) continue
     table[model] = entry
   }
-  if (!Object.values(table).some((e) => e.input_cost_per_token != null && e.output_cost_per_token != null)) {
-    throw new Error('price table has no priced models')
-  }
+  if (!Object.keys(table).length) throw new Error('price table has no priced models')
   return table
 }
 

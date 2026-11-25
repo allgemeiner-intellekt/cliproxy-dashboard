@@ -51,6 +51,11 @@ describe('parseEnv', () => {
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:080/x' }).proxyPort).toBe(80)
   })
 
+  test('rejects proxy port 0', () => {
+    expect(() => parseEnv({ ...KEY, CPA_TARGET: 'http://127.0.0.1:0' })).toThrow('CPA_TARGET port must be from 1 to 65535')
+    expect(() => parseEnv({ ...KEY, CPA_TARGET: 'http://127.0.0.1:99999' })).toThrow('CPA_TARGET')
+  })
+
   test('the management key is used exactly as given', () => {
     expect(parseEnv({ CPA_MANAGEMENT_KEY: ' pass word ' }).managementKey).toBe(' pass word ')
     expect(() => parseEnv({ CPA_MANAGEMENT_KEY: '   ' })).toThrow('CPA_MANAGEMENT_KEY is not set')
