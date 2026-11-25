@@ -148,4 +148,21 @@ describe('import timestamps (D5)', () => {
     )
     expect(await res.json()).toMatchObject({ imported: 2, invalidTimestamp: 2 })
   })
+
+  test('a fork with a bad clock does not suppress the session usage', async () => {
+    const usage = { input_tokens: 5, output_tokens: 5 }
+    const codex = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2999-01-01T00:00:00Z', payload: { id: 'fork', forked_from_id: 'parent' } }),
+      JSON.stringify({ type: 'turn_context', timestamp: '2025-06-01T00:00:00Z', payload: { model: 'gpt-6.1-sol' } }),
+      JSON.stringify({ type: 'event_msg', timestamp: '2025-06-01T00:00:01Z', payload: { type: 'token_count', info: { last_token_usage: usage } } }),
+    ]
+    const res = await app().app.request('/api/import', json('POST', { files: [{ tool: 'codex', lines: codex }] }))
+    expect(await res.json()).toMatchObject({ imported: 1 })
+  })
+
+  test('epoch timestamps are counted as invalid', async () => {
+    const lines = [claudeLine('1970-01-01T00:00:00.000Z', 'e0'), claudeLine('1970-01-01T00:00:00.001Z', 'e1')]
+    const res = await app().app.request('/api/import', json('POST', { files: [{ tool: 'claude-code', lines }] }))
+    expect(await res.json()).toMatchObject({ imported: 0, invalidTimestamp: 2 })
+  })
 })

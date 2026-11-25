@@ -21,7 +21,12 @@ export type TranscriptRecord = {
 }
 
 const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0)
-const timestampOf = (v: unknown) => (typeof v === 'string' ? Date.parse(v) || null : null)
+// Parsed milliseconds, or null if unparseable. 0 (the epoch) is kept so the
+// importer can count it as out of range.
+const timestampOf = (v: unknown) => {
+  const ms = typeof v === 'string' ? Date.parse(v) : NaN
+  return Number.isFinite(ms) ? ms : null
+}
 const obj = (v: unknown) => (typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null)
 
 function parseJson(line: string) {
@@ -106,7 +111,9 @@ export function parseCodexLine(line: string, state: CodexState): TranscriptRecor
     const id = payload.id ?? payload.session_id
     if (typeof id === 'string') state.sessionId = id
     const at = timestampOf(record.timestamp)
-    if (at !== null && isFork(payload)) {
+    // A fork with a bad clock has no usable anchor; suppressing against it
+    // would silently drop the fork's own usage, so import everything instead.
+    if (at !== null && isPlausibleTimestamp(at) && isFork(payload)) {
       state.suppressingForkCopies = true
       state.forkAnchorMs = at
     }
