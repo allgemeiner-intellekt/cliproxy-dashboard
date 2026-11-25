@@ -4,8 +4,9 @@
 import { ChevronRight, LoaderCircle, Pencil, RotateCcw } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { ProviderMark } from '../components/ProviderMark'
-import { bucketLabel, UsageChart, type ChartGroup } from '../components/UsageChart'
-import { PageHead, Segmented, toast } from '../components/ui'
+import { UsageChart, type ChartGroup } from '../components/UsageChart'
+import { PageHead, Segmented } from '../components/ui'
+import { bucketLabel } from '../lib/chart'
 import {
   byProviderOrder,
   clearDeviceName,
@@ -23,6 +24,7 @@ import {
   type Totals,
   type UsageSummary,
 } from '../lib/usage'
+import { toast } from '../lib/toast'
 import { isAbort, usePoll } from '../lib/usePoll'
 
 type Metric = 'cost' | 'tokens'
@@ -37,6 +39,7 @@ const RANGE_OPTIONS: [Range, string][] = [
   ['90d', '90 days'],
   ['all', 'All time'],
 ]
+const rangeLabel = (range: Range) => RANGE_OPTIONS.find(([r]) => r === range)?.[1].toLowerCase() ?? range
 const PREFS_KEY = 'cpa:usage-prefs'
 
 type Prefs = { range: Range; metric: Metric; breakdown: BreakdownKind; chartBy: ChartGroup }
@@ -174,6 +177,7 @@ function MachineName({ machine, onChange }: { machine: MachineUsage; onChange: (
     return (
       <input
         className="input udev-input"
+        aria-label={`Name for ${machine.name}`}
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -190,6 +194,7 @@ function MachineName({ machine, onChange }: { machine: MachineUsage; onChange: (
       <button
         className="udev-name"
         title="Rename"
+        aria-label={`Rename ${machine.name}`}
         onClick={() => {
           setDraft(machine.name)
           setEditing(true)
@@ -200,7 +205,7 @@ function MachineName({ machine, onChange }: { machine: MachineUsage; onChange: (
       </button>
       {machine.nameSource === 'tailscale' && <span className="tag">tailscale</span>}
       {machine.nameSource === 'custom' && (
-        <button className="udev-reset faint" title="Use the Tailscale name again" onClick={reset}>
+        <button className="udev-reset faint" title="Use the Tailscale name again" aria-label={`Use the Tailscale name for ${machine.name} again`} onClick={reset}>
           <RotateCcw size={12} />
         </button>
       )}
@@ -448,6 +453,7 @@ export function UsagePage() {
     <div className="page">
       <PageHead title="Usage">
         <Segmented
+          label="Metric"
           value={prefs.metric}
           onChange={(metric) => setPrefs({ metric })}
           options={[
@@ -455,7 +461,7 @@ export function UsagePage() {
             ['tokens', 'Tokens'],
           ]}
         />
-        <Segmented className="range-seg" value={prefs.range} onChange={(range) => setPrefs({ range })} options={RANGE_OPTIONS} />
+        <Segmented className="range-seg" label="Time range" value={prefs.range} onChange={(range) => setPrefs({ range })} options={RANGE_OPTIONS} />
         {/* Phones get a compact dropdown instead of five buttons. */}
         <select
           className="input range-select"
@@ -469,9 +475,10 @@ export function UsagePage() {
             </option>
           ))}
         </select>
-        {/* Any refresh, including polls and the one on returning to the tab. */}
+        {/* Any refresh, including polls and the one on returning to the tab;
+            a range switch has its own, more specific notice below. */}
         <span className="uloading" role="status">
-          {summary && busy && (
+          {summary && busy && !stale && (
             <>
               <LoaderCircle size={14} className="spin" aria-hidden />
               <span className="sr-only">Loading</span>
@@ -501,15 +508,24 @@ export function UsagePage() {
 
       {!summary && !failed && <UsageSkeleton />}
 
+      {/* Says in words that the numbers below are for the previous range. */}
+      {data && stale && !failed && (
+        <p className="ustale" role="status">
+          <LoaderCircle size={14} className="spin" aria-hidden />
+          Loading {rangeLabel(prefs.range)}. Still showing {rangeLabel(data.range)}.
+        </p>
+      )}
+
       {/* A failed switch hides the previous range's numbers rather than leave them up. */}
       {summary && !(stale && failed) && (
-        <div className={stale ? 'ubody is-stale' : 'ubody'} aria-busy={busy}>
+        <div className={stale ? 'ubody is-stale' : 'ubody'}>
           <div className="utop">
             <Hero summary={summary} metric={prefs.metric} />
             <div>
               <div className="utop-head">
                 <div className="eyebrow">{chartTitle}</div>
                 <Segmented
+                  label="Chart grouping"
                   className="seg-small"
                   value={prefs.chartBy}
                   onChange={(chartBy) => setPrefs({ chartBy })}
@@ -535,6 +551,7 @@ export function UsagePage() {
               <h2>Breakdown</h2>
               <div className="page-actions">
                 <Segmented
+                  label="Breakdown"
                   value={prefs.breakdown}
                   onChange={(breakdown) => setPrefs({ breakdown })}
                   options={[

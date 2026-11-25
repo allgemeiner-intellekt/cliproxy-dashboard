@@ -58,7 +58,7 @@ export type IdentityKind = 'key' | 'ip'
 
 const TIMEOUT_MS = 20e3
 
-async function api<T>(path: string, options?: RequestInit & { okStatuses?: number[] }): Promise<T> {
+export async function api<T>(path: string, options?: RequestInit & { okStatuses?: number[] }, timeoutMs = TIMEOUT_MS): Promise<T> {
   const { okStatuses, ...init } = options ?? {}
   // One controller for both the caller's cancellation and our timeout, so a hung
   // server fails the request instead of leaving the page loading forever.
@@ -72,7 +72,7 @@ async function api<T>(path: string, options?: RequestInit & { okStatuses?: numbe
   const timer = setTimeout(() => {
     timedOut = true
     controller.abort()
-  }, TIMEOUT_MS)
+  }, timeoutMs)
   try {
     const res = await fetch(`/api${path}`, {
       ...init,
@@ -206,7 +206,7 @@ const PROVIDERS: Record<string, { label: string; color: string }> = {
   anthropic: { label: 'Anthropic', color: 'var(--claude)' },
   meta: { label: 'Meta', color: 'var(--meta)' },
   xai: { label: 'xAI', color: 'var(--xai)' },
-  gemini: { label: 'Google', color: '#5485c4' },
+  gemini: { label: 'Google', color: 'var(--gemini)' },
   unknown: { label: 'Unknown', color: 'var(--fg-3)' },
 }
 const PROVIDER_ORDER = Object.keys(PROVIDERS)
