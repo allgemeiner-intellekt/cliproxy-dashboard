@@ -10,7 +10,7 @@ const dir = mkdtempSync(join(tmpdir(), 'tailnet-test-'))
 const statusFile = join(dir, 'status.json')
 const modeFile = join(dir, 'mode')
 const cli = join(dir, 'tailscale')
-const mode = (m: 'ok' | 'fail' | 'hang') => writeFileSync(modeFile, m)
+const mode = (m: 'ok' | 'fail' | 'hang' | 'stubborn') => writeFileSync(modeFile, m)
 writeFileSync(
   cli,
   `#!/bin/sh
@@ -18,16 +18,23 @@ case "$(cat "${modeFile}")" in
   ok) cat "${statusFile}" ;;
   fail) exit 1 ;;
   hang) exec sleep 30 ;;
+  # Ignores SIGTERM and leaves a child holding stdout open.
+  stubborn) trap '' TERM; sleep 3 & wait ;;
 esac
 `,
 )
 chmodSync(cli, 0o755)
+const previousBin = process.env.TAILSCALE_BIN
 process.env.TAILSCALE_BIN = cli
 const { Tailnet } = await import('./tailnet')
+// The CLI path is read at import; restore the variable for other test files.
+if (previousBin === undefined) delete process.env.TAILSCALE_BIN
+else process.env.TAILSCALE_BIN = previousBin
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 const STATUS = {
+  BackendState: 'Running',
   Self: { DNSName: 'laptop.tail1234.ts.net.', HostName: 'laptop', TailscaleIPs: ['100.64.0.1'], Online: true },
   Peer: { a: { DNSName: 'phone.tail1234.ts.net.', HostName: 'localhost', TailscaleIPs: ['100.64.0.2'], Online: false } },
 }
@@ -79,12 +86,53 @@ describe('Tailnet.sync', () => {
     expect(tailnet.lastError).toContain('timed out')
   })
 
+  test('a stubborn CLI that ignores SIGTERM and leaks its stdout still times out', async () => {
+    mode('stubborn')
+    const tailnet = new Tailnet(openDb(':memory:'), 200)
+    const started = Date.now()
+    await tailnet.sync()
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(tailnet.lastError).toContain('timed out')
+  })
+
+  test('a logged-out backend keeps the last good names', async () => {
+    const db = openDb(':memory:')
+    const tailnet = new Tailnet(db)
+    mode('ok')
+    await tailnet.sync()
+    const before = names(db)
+
+    // What `tailscale status --json` prints, exit 0, while logged out.
+    writeFileSync(statusFile, JSON.stringify({ BackendState: 'NeedsLogin', Self: { HostName: 'laptop', TailscaleIPs: [] } }))
+    await tailnet.sync()
+    expect(names(db)).toEqual(before)
+    expect(tailnet.lastError).toContain('NeedsLogin')
+  })
+
+  test('a running tailnet with no peers is a good sync', async () => {
+    mode('ok')
+    writeFileSync(statusFile, JSON.stringify({ BackendState: 'Running', Self: STATUS.Self }))
+    const db = openDb(':memory:')
+    const tailnet = new Tailnet(db)
+    await tailnet.sync()
+    expect(names(db)['100.64.0.1']).toBe('laptop')
+    expect(tailnet.lastError).toBeNull()
+  })
+
+  test('overlapping syncs share one CLI run', async () => {
+    mode('ok')
+    const tailnet = new Tailnet(openDb(':memory:'))
+    const a = tailnet.sync()
+    expect(tailnet.sync()).toBe(a)
+    await a
+  })
+
   test('removed devices drop out on the next good sync', async () => {
     mode('ok')
     const db = openDb(':memory:')
     const tailnet = new Tailnet(db)
     await tailnet.sync()
-    writeFileSync(statusFile, JSON.stringify({ Self: STATUS.Self }))
+    writeFileSync(statusFile, JSON.stringify({ BackendState: 'Running', Self: STATUS.Self }))
     await tailnet.sync()
     expect(names(db)['100.64.0.2']).toBeUndefined()
   })

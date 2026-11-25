@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/client'
@@ -55,12 +55,15 @@ describe('reseller listings', () => {
 
 describe('price table loading', () => {
   const realFetch = globalThis.fetch
+  const dirs: string[] = []
   afterEach(() => {
     globalThis.fetch = realFetch
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
   function tempCache(contents?: unknown) {
     const dir = mkdtempSync(join(tmpdir(), 'pricing-test-'))
+    dirs.push(dir)
     const path = join(dir, 'prices.json')
     if (contents !== undefined) writeFileSync(path, JSON.stringify(contents))
     return path
@@ -105,6 +108,40 @@ describe('price table loading', () => {
     expect(await b.refresh()).toBe(false)
     expect(refreshed).toBe(0)
     expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('a JSON object with malformed entries does not replace the table', async () => {
+    for (const body of [{ 'test-model': null }, { 'test-model': { input_cost_per_token: 'free' } }, {}]) {
+      globalThis.fetch = (async () => new Response(JSON.stringify(body))) as unknown as typeof fetch
+      const cache = tempCache(TABLE)
+      const b = new PriceBook(openDb(':memory:'), cache)
+      b.load()
+      expect(await b.refresh()).toBe(false)
+      expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+      expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(TABLE)
+    }
+  })
+
+  test('malformed entries in an otherwise good table are skipped, not fatal', async () => {
+    const next = { ...TABLE, broken: null, half: { input_cost_per_token: 1e-6, output_cost_per_token: 'x' } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('broken')).toBeNull()
+    expect(b.lookup('half')).toBeNull()
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('stop() during a refresh schedules nothing afterwards', async () => {
+    let release!: (r: Response) => void
+    globalThis.fetch = (() => new Promise<Response>((resolve) => (release = resolve))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    const first = b.start()
+    expect(b.start()).toBe(first) // idempotent while running
+    b.stop()
+    release(new Response(JSON.stringify(TABLE)))
+    expect(await first).toBe(true)
+    expect((b as unknown as { timer?: unknown }).timer).toBeUndefined()
   })
 
   test('a good download replaces the table, writes the cache and notifies', async () => {

@@ -1,16 +1,20 @@
-// Server configuration, read once from the environment and validated at
-// startup so a bad value fails loudly instead of misbehaving later.
+// Configuration from the environment, validated when an entry point asks for
+// it so a bad value fails loudly at startup instead of misbehaving later.
 // Bun loads .env.local from the working directory (the repo root).
 
-import { parseEnv, type Env } from './config'
+import { parseServerEnv, parseStorageEnv, type ServerEnv, type StorageEnv } from './config'
 
-function loadEnv(): Env {
+function orExit<T>(parse: () => T): T {
   try {
-    return parseEnv(process.env)
+    return parse()
   } catch (err) {
     console.error(`[config] ${(err as Error).message}`)
     process.exit(1)
   }
 }
 
-export const env = loadEnv()
+// Everything the server needs.
+export const serverEnv = (): ServerEnv => orExit(() => parseServerEnv(process.env))
+
+// Just the storage paths, for one-shot tools like the importers.
+export const storageEnv = (): StorageEnv => orExit(() => parseStorageEnv(process.env))

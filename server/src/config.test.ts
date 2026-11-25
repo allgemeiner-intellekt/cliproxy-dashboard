@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseEnv } from './config'
+import { parseServerEnv as parseEnv, parseStorageEnv } from './config'
 
 const KEY = { CPA_MANAGEMENT_KEY: 'secret' }
 
@@ -7,7 +7,6 @@ describe('parseEnv', () => {
   test('defaults', () => {
     expect(parseEnv(KEY)).toEqual({
       managementKey: 'secret',
-      proxyUrl: 'http://127.0.0.1:8317',
       proxyHost: '127.0.0.1',
       proxyPort: 8317,
       host: '127.0.0.1',
@@ -42,6 +41,40 @@ describe('parseEnv', () => {
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:80' }).proxyPort).toBe(80)
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:9000/v0' })).toMatchObject({ proxyHost: 'proxy.lan', proxyPort: 9000 })
     expect(parseEnv({ ...KEY, CPA_TARGET: 'http://u:p@proxy.lan:9000' }).proxyPort).toBe(9000)
+  })
+
+  test('proxy port follows URL parsing, not a looser reading of the text', () => {
+    // Extra slashes and embedded tabs are tolerated by URL; the port must match.
+    expect(parseEnv({ ...KEY, CPA_TARGET: 'http:///proxy.lan:9000' })).toMatchObject({ proxyHost: 'proxy.lan', proxyPort: 9000 })
+    expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:9\t000' }).proxyPort).toBe(9000)
+    expect(parseEnv({ ...KEY, CPA_TARGET: 'http:///proxy.lan:80' }).proxyPort).toBe(80)
+    expect(parseEnv({ ...KEY, CPA_TARGET: 'http://proxy.lan:080/x' }).proxyPort).toBe(80)
+  })
+
+  test('the management key is used exactly as given', () => {
+    expect(parseEnv({ CPA_MANAGEMENT_KEY: ' pass word ' }).managementKey).toBe(' pass word ')
+    expect(() => parseEnv({ CPA_MANAGEMENT_KEY: '   ' })).toThrow('CPA_MANAGEMENT_KEY is not set')
+  })
+
+  test('errors never echo the proxy URL, which may hold credentials', () => {
+    for (const target of ['https://admin:hunter2@proxy.example.com', 'http://admin:hunter2@[bad']) {
+      let message = ''
+      try {
+        parseEnv({ ...KEY, CPA_TARGET: target })
+      } catch (err) {
+        message = (err as Error).message
+      }
+      expect(message).toContain('CPA_TARGET')
+      expect(message).not.toContain('hunter2')
+    }
+  })
+
+  test('storage settings parse without any server settings', () => {
+    expect(parseStorageEnv({ USAGE_SERVER_PORT: 'bad', CPA_TARGET: 'https://x' })).toEqual({
+      databasePath: 'data/usage.db',
+      priceCachePath: 'data/litellm-prices.json',
+    })
+    expect(parseStorageEnv({ USAGE_DB_PATH: '/srv/u.db' }).databasePath).toBe('/srv/u.db')
   })
 
   test('IPv6 proxy hosts are unbracketed', () => {

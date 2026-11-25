@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { openDb } from '../db/client'
-import { env } from '../env'
+import { storageEnv } from '../env'
 import { PriceBook } from '../usage/pricing'
 import { importTranscripts, type TranscriptFile } from './importer'
 
@@ -17,6 +17,7 @@ if (!path || !values.ip) {
 }
 
 const { files } = JSON.parse(readFileSync(path, 'utf8')) as { files: TranscriptFile[] }
+const env = storageEnv()
 const db = openDb(env.databasePath)
 const prices = new PriceBook(db, env.priceCachePath)
 // One-shot: wait (bounded) for a fresh table, else price from the cache.

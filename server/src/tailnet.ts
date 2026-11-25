@@ -21,11 +21,12 @@ const CLI_CANDIDATES = [
 ].filter(Boolean) as string[]
 
 type StatusNode = { DNSName?: string; HostName?: string; OS?: string; TailscaleIPs?: string[]; Online?: boolean }
-type Status = { Self?: StatusNode; Peer?: Record<string, StatusNode> }
+type Status = { BackendState?: string; Self?: StatusNode; Peer?: Record<string, StatusNode> }
 
 export class Tailnet {
   syncedAt: number | null = null
   lastError: string | null = null
+  private syncing: Promise<void> | null = null
 
   constructor(
     private db: Db,
@@ -42,7 +43,15 @@ export class Tailnet {
     setInterval(run, REFRESH_EVERY_MS)
   }
 
-  async sync() {
+  // One sync at a time: a call during a sync shares it.
+  sync(): Promise<void> {
+    this.syncing ??= this.syncOnce().finally(() => {
+      this.syncing = null
+    })
+    return this.syncing
+  }
+
+  private async syncOnce() {
     let status: Status
     try {
       status = await readStatus(this.statusTimeoutMs)
@@ -92,12 +101,44 @@ function nameOf(node: StatusNode) {
 async function readStatus(timeoutMs: number): Promise<Status> {
   const cli = CLI_CANDIDATES.find((path) => existsSync(path))
   if (!cli) throw new Error('tailscale CLI not found')
-  const proc = Bun.spawn([cli, 'status', '--json'], { stdout: 'pipe', stderr: 'ignore', timeout: timeoutMs })
-  const text = await new Response(proc.stdout).text()
-  const code = await proc.exited
-  if (proc.signalCode) throw new Error(`tailscale status timed out after ${timeoutMs / 1000}s`)
-  if (code !== 0) throw new Error(`tailscale status exited with code ${code}`)
+  const text = await runBounded('tailscale status', [cli, 'status', '--json'], timeoutMs)
   const status: unknown = JSON.parse(text)
   if (!status || typeof status !== 'object') throw new Error('tailscale status returned unexpected output')
+  // While logged out or starting, status still exits 0 but has no peer map;
+  // treating that as "no devices" would wipe every name.
+  const state = (status as Status).BackendState
+  if (state !== 'Running') throw new Error(`tailscale is not running (state ${state ?? 'unknown'})`)
   return status as Status
+}
+
+// Runs a command and returns its stdout, failing after timeoutMs no matter
+// what: the process is SIGKILLed (it can't ignore that) and the pipe is
+// abandoned, in case something it started still holds it open.
+async function runBounded(label: string, cmd: string[], timeoutMs: number): Promise<string> {
+  const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'ignore' })
+  const reader = proc.stdout.getReader()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      proc.kill('SIGKILL')
+      reader.cancel().catch(() => {})
+      reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`))
+    }, timeoutMs)
+  })
+  const run = async () => {
+    const chunks: Uint8Array[] = []
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+    }
+    const code = await proc.exited
+    if (code !== 0) throw new Error(`${label} exited with code ${code}`)
+    return Buffer.concat(chunks).toString('utf8')
+  }
+  try {
+    return await Promise.race([run(), timedOut])
+  } finally {
+    clearTimeout(timer)
+  }
 }

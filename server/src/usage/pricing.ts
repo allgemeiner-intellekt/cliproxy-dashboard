@@ -75,6 +75,7 @@ export class PriceBook {
 
   private refreshing: Promise<boolean> | null = null
   private timer?: ReturnType<typeof setTimeout>
+  private running: Promise<boolean> | null = null
 
   // Loads overrides and the cached table from disk. Synchronous, so pricing
   // works from the last good table before any download.
@@ -84,17 +85,23 @@ export class PriceBook {
   }
 
   // Loads what's on disk, then refreshes in the background: daily, or sooner
-  // after a failure. Never waits on the network.
-  start() {
+  // after a failure. Returns at once; the promise settles with the first
+  // refresh's outcome, for work that should wait for fresh prices if it can.
+  start(): Promise<boolean> {
+    if (this.running) return this.running
     this.load()
     const tick = async () => {
       const ok = await this.refresh()
-      this.timer = setTimeout(tick, ok ? REFRESH_EVERY_MS : RETRY_AFTER_FAILURE_MS)
+      if (this.running === first) this.timer = setTimeout(tick, ok ? REFRESH_EVERY_MS : RETRY_AFTER_FAILURE_MS)
+      return ok
     }
-    void tick()
+    const first = tick()
+    this.running = first
+    return first
   }
 
   stop() {
+    this.running = null
     clearTimeout(this.timer)
   }
 
@@ -210,12 +217,34 @@ export class PriceBook {
   }
 }
 
-// Parses LiteLLM's table, rejecting anything that isn't a JSON object (an
-// HTML error page, a truncated download) so it can't replace a good table.
+// Parses LiteLLM's table. Anything that isn't a JSON object of model entries
+// (an HTML error page, a truncated or garbled download) is rejected so it
+// can't replace a good table; malformed entries and rates are dropped.
 function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
-  const table: unknown = JSON.parse(text)
-  if (!table || typeof table !== 'object' || Array.isArray(table)) throw new Error('price table is not a JSON object')
-  return table as Record<string, LiteLlmEntry>
+  const raw: unknown = JSON.parse(text)
+  if (!isObject(raw)) throw new Error('price table is not a JSON object')
+  const table: Record<string, LiteLlmEntry> = {}
+  for (const [model, value] of Object.entries(raw)) {
+    if (!isObject(value)) continue
+    const entry: LiteLlmEntry = {}
+    if (typeof value.litellm_provider === 'string') entry.litellm_provider = value.litellm_provider
+    if (typeof value.mode === 'string') entry.mode = value.mode
+    for (const field of RATE_FIELDS) {
+      const rate = value[field]
+      if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) entry[field] = rate
+    }
+    table[model] = entry
+  }
+  if (!Object.values(table).some((e) => e.input_cost_per_token != null && e.output_cost_per_token != null)) {
+    throw new Error('price table has no priced models')
+  }
+  return table
+}
+
+const RATE_FIELDS = ['input_cost_per_token', 'output_cost_per_token', 'cache_read_input_token_cost', 'cache_creation_input_token_cost'] as const
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function rank(e: LiteLlmEntry) {
