@@ -258,6 +258,22 @@ export class PriceBook {
     return priced
   }
 
+  // Whether `rawModel` can be priced directly or via any provider-scoped alias
+  // whose target exists in the current table. Used by repriceMissing() to skip
+  // unpriceable models with a single index seek per distinct model.
+  mayPrice(rawModel: string): boolean {
+    if (this.lookup(rawModel) !== null) return true
+    const model = normalizeModel(rawModel)
+    if (NEVER_PRICED.has(model)) return false
+    const suffix = `/${model}`
+    for (const [key, target] of Object.entries(this.aliases)) {
+      if (key.endsWith(suffix) && this.table[target] && this.toRates(target, this.table[target])) {
+        return true
+      }
+    }
+    return false
+  }
+
   private find(model: string, provider?: string): Priced | null {
     if (NEVER_PRICED.has(model)) return null
 
