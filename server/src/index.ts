@@ -19,7 +19,7 @@ const db = openDb(env.databasePath)
 // background so a slow network can't hold up collection or the API.
 // Backfilled costs are permanent, so stored rows are repriced once the first
 // download settles: from the fresh table (onRefresh), or the cache if it failed.
-const prices = new PriceBook(env.priceCachePath)
+const prices = new PriceBook(env.priceCachePath, env.priceAliasesPath)
 prices.onRefresh = () => repriceMissing(db, prices)
 void prices
   .start()

@@ -8,6 +8,7 @@ type Source = Record<string, string | undefined>
 export type StorageEnv = {
   databasePath: string
   priceCachePath: string
+  priceAliasesPath?: string
 }
 
 // The server additionally talks to the proxy and listens for the dashboard.
@@ -40,6 +41,7 @@ export function parseStorageEnv(source: Source): StorageEnv {
   return {
     databasePath: get('USAGE_DB_PATH') ?? 'data/usage.db',
     priceCachePath: get('PRICE_CACHE_PATH') ?? 'data/litellm-prices.json',
+    priceAliasesPath: get('PRICE_ALIASES_PATH'),
   }
 }
 

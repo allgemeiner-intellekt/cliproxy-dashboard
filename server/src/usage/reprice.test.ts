@@ -62,6 +62,25 @@ describe('repriceMissing', () => {
     repriceMissing(db, prices)
     expect(db.select().from(requests).get()?.costMicros).toBe(1_100_000)
   })
+
+  test('backfills provider-scoped aliases and 0-token rows', () => {
+    const { db, prices } = setup({
+      'moonshot/kimi-k3': { litellm_provider: 'moonshot', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+      'gemini/gemini-4-neon': { litellm_provider: 'gemini', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+    })
+    db.insert(requests)
+      .values([
+        row('kimi-k3', { provider: 'kimi', model: 'k3', inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 500_000 }),
+        row('other-k3', { provider: 'other', model: 'k3', inputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
+        row('neon-499', { provider: 'antigravity', model: 'gemini-4-neon-xhigh', failed: true, statusCode: 499, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 }),
+      ])
+      .run()
+    repriceMissing(db, prices)
+    const byId = Object.fromEntries(db.select().from(requests).all().map((r) => [r.id, r]))
+    expect(byId['kimi-k3']).toMatchObject({ costMicros: 2_000_000, pricedAs: 'fallback:moonshot/kimi-k3' })
+    expect(byId['other-k3']).toMatchObject({ costMicros: null, pricedAs: null })
+    expect(byId['neon-499']).toMatchObject({ costMicros: 0, cacheSavingsMicros: 0, pricedAs: 'fallback:gemini/gemini-4-neon' })
+  })
 })
 
 describe('repricing cost (P5)', () => {

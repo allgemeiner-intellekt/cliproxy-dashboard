@@ -23,7 +23,7 @@ export function repriceMissing(db: Db, prices: PriceBook) {
   // cost nothing on each refresh no matter how many pile up.
   const models = (db.$client.query(UNPRICED_MODELS).all() as { model: string }[])
     .map((r) => r.model)
-    .filter((model) => prices.lookup(model) !== null)
+    .filter((model) => prices.mayPrice(model))
   if (!models.length) return
 
   const rows = db
@@ -35,7 +35,7 @@ export function repriceMissing(db: Db, prices: PriceBook) {
   let updated = 0
   db.transaction((tx) => {
     for (const row of rows) {
-      const price = prices.lookup(row.model)
+      const price = prices.lookup(row.model, row.provider)
       if (!price) continue
       const tokens = {
         input: row.inputTokens,

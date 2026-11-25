@@ -72,8 +72,9 @@ export function toRequestRow(r: CliproxyRecord, prices: PriceBook): RequestRow {
     throw new Error('Usage record missing execution_id and request_id')
   }
   const tokens = tokensOf(r)
+  const provider = typeof r.provider === 'string' ? r.provider : ''
   const model = strOrNull(r.response_model) || r.model
-  const price = prices.lookup(model)
+  const price = prices.lookup(model, provider)
   const userAgent = strOrNull(r.user_agent)
 
   return {
@@ -82,7 +83,7 @@ export function toRequestRow(r: CliproxyRecord, prices: PriceBook): RequestRow {
     occurredAt: new Date(occurredMs),
     receivedAt: new Date(),
 
-    provider: typeof r.provider === 'string' ? r.provider : '',
+    provider,
     model,
     requestedModel: strOrNull(r.alias),
 

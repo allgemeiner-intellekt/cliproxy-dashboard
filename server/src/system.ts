@@ -104,7 +104,7 @@ export function systemInfo(
   })
 
   const usedModels: UsedModelPricing[] = modelRows.map((row) => {
-    const priced = prices.lookup(row.model)
+    const priced = prices.lookup(row.model, row.provider)
     const matchKind = !priced ? 'unpriced' : priced.pricedAs.startsWith('fallback:') ? 'fallback' : 'exact'
     return {
       model: row.model,
