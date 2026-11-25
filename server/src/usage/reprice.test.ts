@@ -6,7 +6,7 @@ import { repriceMissing } from './reprice'
 
 function setup(table: Record<string, unknown>) {
   const db = openDb(':memory:')
-  const prices = new PriceBook(db, '/nonexistent/prices.json')
+  const prices = new PriceBook('/nonexistent/prices.json')
   ;(prices as unknown as { table: unknown }).table = table
   return { db, prices }
 }
@@ -58,8 +58,21 @@ describe('repriceMissing', () => {
     db.insert(requests).values(row('later')).run()
     repriceMissing(db, prices)
     expect(db.select().from(requests).get()?.costMicros).toBeNull()
-    ;(prices as unknown as { table: unknown }).table = TABLE
+    ;(prices as unknown as { setTable: (t: unknown) => void }).setTable(TABLE)
     repriceMissing(db, prices)
     expect(db.select().from(requests).get()?.costMicros).toBe(1_100_000)
+  })
+})
+
+describe('repricing cost (P5)', () => {
+  test('models that still have no price are looked up once, not once per row', () => {
+    const { db, prices } = setup(TABLE)
+    db.insert(requests).values([row('p'), ...Array.from({ length: 50 }, (_, i) => row(`u${i}`, { model: 'mystery' }))]).run()
+    const asked: string[] = []
+    const lookup = prices.lookup.bind(prices)
+    prices.lookup = (model) => (asked.push(model), lookup(model))
+    repriceMissing(db, prices)
+    expect(asked.filter((m) => m === 'mystery')).toHaveLength(1)
+    expect(db.select().from(requests).all().filter((r) => r.costMicros !== null).map((r) => r.id)).toEqual(['p'])
   })
 })

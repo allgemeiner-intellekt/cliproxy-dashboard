@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { ensureRollup } from './rollup'
 import * as schema from './schema'
 
 export type Db = ReturnType<typeof openDb>
@@ -26,10 +27,14 @@ export function openDb(configuredPath: string) {
   sqlite.exec('PRAGMA journal_mode = WAL;')
   sqlite.exec('PRAGMA synchronous = NORMAL;')
   sqlite.exec('PRAGMA foreign_keys = ON;')
+  // INSERT OR REPLACE must fire delete triggers, or usage_rollup keeps the
+  // replaced row (see db/rollup.ts).
+  sqlite.exec('PRAGMA recursive_triggers = ON;')
   if (onDisk) restrictToOwner(path)
 
   const db = drizzle(sqlite, { schema })
   migrate(db, { migrationsFolder: new URL('../../drizzle', import.meta.url).pathname })
+  ensureRollup(sqlite)
   return db
 }
 

@@ -134,8 +134,7 @@ describe('D1: usage record validation', () => {
     ).toBe(true)
     expect(isUsageRecord({ timestamp: '2026-11-24T00:00:00Z', model: 'gpt-6.1-sol', request_id: 'r1' })).toBe(true)
 
-    const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const execRow = toRequestRow(
       {
         timestamp: '2026-11-24T00:00:00Z',
@@ -182,7 +181,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -224,7 +223,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -255,7 +254,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -306,7 +305,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -355,7 +354,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
       fake.server.close()
     })
 
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -393,7 +392,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -454,7 +453,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -494,7 +493,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
       fake.server.close()
     })
 
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -547,7 +546,7 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     })
 
     const db = openDb(':memory:')
-    const prices = new PriceBook(db, '')
+    const prices = new PriceBook('')
     const collector = new CliproxyCollector(db, prices, {
       host: '127.0.0.1',
       port: fake.port,
@@ -634,7 +633,7 @@ describe('T3: live delivery and reconnection', () => {
 
   function collectorFor(port: number) {
     const db = openDb(':memory:')
-    const collector = new CliproxyCollector(db, new PriceBook(db, ''), { host: '127.0.0.1', port, managementKey: 'secret', initialBackoffMs: 25 })
+    const collector = new CliproxyCollector(db, new PriceBook(''), { host: '127.0.0.1', port, managementKey: 'secret', initialBackoffMs: 25 })
     cleanups.push(() => collector.stop())
     return { db, collector }
   }
@@ -717,7 +716,7 @@ describe('T3: a permanently bad row', () => {
     const db = openDb(':memory:')
     // A constraint-style failure SQLite won't succeed on retry.
     db.run(sql`CREATE TRIGGER reject_poison BEFORE INSERT ON requests WHEN NEW.id LIKE '%poison%' BEGIN SELECT RAISE(ABORT, 'poisoned row'); END`)
-    const collector = new CliproxyCollector(db, new PriceBook(db, ''), { host: '127.0.0.1', port: fake.port, managementKey: 'secret', initialBackoffMs: 25 })
+    const collector = new CliproxyCollector(db, new PriceBook(''), { host: '127.0.0.1', port: fake.port, managementKey: 'secret', initialBackoffMs: 25 })
     cleanups.push(() => collector.stop())
 
     collector.start()

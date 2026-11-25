@@ -5,6 +5,7 @@
 // - Unknown values are NULL, never invented as 0.
 // - Each request is stored once; re-delivery is ignored via its primary key.
 
+import { sql } from 'drizzle-orm'
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 
 // One row per model request, from any source.
@@ -56,10 +57,62 @@ export const requests = sqliteTable(
   },
   (t) => [
     index('requests_occurred_at').on(t.occurredAt),
-    index('requests_model').on(t.model, t.occurredAt),
+    // When live collection began (the import cutoff), and per-source scans.
+    index('requests_source').on(t.source, t.occurredAt),
     index('requests_client_key').on(t.clientKeyHash),
     index('requests_client_ip').on(t.clientIp),
+    // A session's newest request, when its latest is deleted (db/rollup.ts).
+    index('requests_session').on(t.sessionId, t.provider, t.model, t.tool, t.occurredAt),
+    // Rows still waiting for a price, by model, so repricing skips the rest.
+    index('requests_unpriced')
+      .on(t.model)
+      .where(sql`cost_micros IS NULL OR cache_savings_micros IS NULL`),
   ],
+)
+
+// Per-15-minute totals of `requests`, what the usage summary reads instead
+// of scanning every request. 15 minutes divides every time zone's offset, so
+// slots never straddle a local day.
+//
+// Kept exact by triggers on `requests` (insert, update, delete) that live in
+// db/rollup.ts, not here: drizzle schemas can't declare triggers. Nullable
+// grouping columns are encoded (NULL as 'n', text x as 'v' || x; see
+// rollup.ts) so they can be part of the key without conflating values.
+export const usageRollup = sqliteTable(
+  'usage_rollup',
+  {
+    slot: integer('slot').notNull(), // start of the 15-minute slot, ms
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    accountLabel: text('account_label').notNull(),
+    clientKeyHash: text('client_key_hash').notNull(),
+    clientIp: text('client_ip').notNull(),
+    records: integer('records').notNull(),
+    unpricedRecords: integer('unpriced_records').notNull(),
+    costMicros: integer('cost_micros').notNull(),
+    cacheSavingsMicros: integer('cache_savings_micros').notNull(),
+    inputTokens: integer('input_tokens').notNull(),
+    cacheReadTokens: integer('cache_read_tokens').notNull(),
+    cacheWriteTokens: integer('cache_write_tokens').notNull(),
+    outputTokens: integer('output_tokens').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.slot, t.provider, t.model, t.accountLabel, t.clientKeyHash, t.clientIp] })],
+)
+
+// Each session's latest request per model, for counting sessions active in
+// a window without scanning requests: windows always run up to now, so a
+// session was active in one exactly when its last request falls inside.
+// Maintained by the same triggers as usage_rollup.
+export const usageSessions = sqliteTable(
+  'usage_sessions',
+  {
+    tool: text('tool').notNull(), // coalesce(tool, 'other')
+    sessionId: text('session_id').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    lastAt: integer('last_at').notNull(), // ms
+  },
+  (t) => [primaryKey({ columns: [t.tool, t.sessionId, t.provider, t.model] }), index('usage_sessions_last_at').on(t.lastAt)],
 )
 
 // Named machines ("laptop", "desktop").
@@ -83,14 +136,6 @@ export const machineIdentities = sqliteTable(
   (t) => [primaryKey({ columns: [t.kind, t.value] })],
 )
 
-// What each proxy key is for ("Primary", "CI"). Display only: unlike a
-// machine identity, a label never affects which machine requests belong to,
-// so a key shared by several machines can still be labeled.
-export const keyLabels = sqliteTable('key_labels', {
-  keyHash: text('key_hash').primaryKey(),
-  label: text('label').notNull(),
-})
-
 // Devices on the tailnet, synced from `tailscale status`, keyed by IP.
 // This machine is also listed under its loopback addresses, so requests
 // made locally get its name too.
@@ -102,40 +147,4 @@ export const tailnetDevices = sqliteTable('tailnet_devices', {
   isSelf: integer('is_self', { mode: 'boolean' }).notNull(),
   online: integer('online', { mode: 'boolean' }),
   syncedAt: integer('synced_at', { mode: 'timestamp_ms' }).notNull(),
-})
-
-// Manual prices for models the public price table lacks or gets wrong.
-// Rates are micro-dollars per million tokens.
-export const priceOverrides = sqliteTable('price_overrides', {
-  model: text('model').primaryKey(),
-  inputPerMTok: integer('input_per_mtok').notNull(),
-  outputPerMTok: integer('output_per_mtok').notNull(),
-  cacheReadPerMTok: integer('cache_read_per_mtok'),
-  cacheWritePerMTok: integer('cache_write_per_mtok'),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
-})
-
-// Other people's proxies allowed to borrow from this one while sharing is on.
-// The peer holds a pool token (stored hashed); the gateway forwards with a
-// proxy key of its own per peer, so the peer never holds a proxy key and its
-// usage shows under that key.
-export const poolPeers = sqliteTable('pool_peers', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  name: text('name').notNull().unique(),
-  tokenHash: text('token_hash').notNull().unique(),
-  proxyKey: text('proxy_key').notNull(),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
-
-// Which pools ('claude', 'codex', 'grok', 'muse') are lent out, and until
-// when. Absent means not shared; a null `until` means until turned off.
-export const poolSharing = sqliteTable('pool_sharing', {
-  pool: text('pool').primaryKey(),
-  until: integer('until', { mode: 'timestamp_ms' }),
-})
-
-// Small named values set from the dashboard, e.g. 'owner': the name peers see.
-export const settings = sqliteTable('settings', {
-  key: text('key').primaryKey(),
-  value: text('value').notNull(),
 })

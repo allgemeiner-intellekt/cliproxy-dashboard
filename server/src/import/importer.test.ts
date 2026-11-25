@@ -9,7 +9,7 @@ import { importTranscripts, type TranscriptFile } from './importer'
 
 function setup() {
   const db = openDb(':memory:')
-  const prices = new PriceBook(db, '/nonexistent/prices.json')
+  const prices = new PriceBook('/nonexistent/prices.json')
   ;(prices as unknown as { table: unknown }).table = {
     'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5, cache_read_input_token_cost: 5e-7 },
   }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { openDb } from '../db/client'
-import { requests } from '../db/schema'
+import { machineIdentities, machines, requests } from '../db/schema'
 import { usageSummary } from './summary'
 
 const now = Date.UTC(2026, 9, 14, 12, 30)
@@ -121,5 +121,132 @@ describe('all-time window bounds (D5)', () => {
     const keys = usageSummary(db, 'all', 'UTC', now).series.map((s) => s.key)
     const expected = Array.from({ length: 17 }, (_, i) => new Date(Date.UTC(2026, 8, 28 + i)).toISOString().slice(0, 10))
     expect(keys).toEqual(expected)
+  })
+})
+
+describe('time zones whose offset is not whole hours (D6)', () => {
+  // 2026-10-14 in India (+05:30) runs 2026-10-13T18:30Z to 2026-10-14T18:30Z.
+  const ist = (h: number, m: number) => new Date(Date.UTC(2026, 9, 13, 18, 30) + (h * 60 + m) * 60e3)
+
+  test('requests just after local midnight land on the right local day', () => {
+    const db = fixture([{ occurredAt: ist(0, 10) }, { occurredAt: ist(-1, 50) }])
+    const days = usageSummary(db, '30d', 'Asia/Kolkata', now).series
+    const day = (key: string) => days.find((d) => d.key === key)?.providers.openai?.costMicros ?? 0
+    expect(day('2026-10-14')).toBe(1000) // 00:10 local
+    expect(day('2026-10-13')).toBe(1000) // 23:50 local the day before
+  })
+
+  test("the window includes its first day's first half hour", () => {
+    // 30d ending 2026-10-14 starts on 2026-09-15 at local midnight = 18:30Z the day before.
+    const startOfFirstDay = new Date(Date.UTC(2026, 8, 14, 18, 30))
+    const db = fixture([{ occurredAt: new Date(startOfFirstDay.getTime() + 10 * 60e3) }])
+    const summary = usageSummary(db, '30d', 'Asia/Kolkata', now)
+    expect(summary.totals.records).toBe(1)
+    expect(summary.series[0]).toMatchObject({ key: '2026-09-15', providers: { openai: { costMicros: 1000 } } })
+  })
+
+  test('hourly buckets follow local hours (+05:45)', () => {
+    const at = Date.UTC(2026, 9, 14, 11, 50) // 17:35 in Kathmandu
+    const db = fixture([{ occurredAt: new Date(at) }])
+    const summary = usageSummary(db, '24h', 'Asia/Kathmandu', now)
+    const hit = summary.series.find((s) => s.providers.openai)
+    // The bucket starts at 17:00 local = 11:15Z.
+    expect(hit?.key).toBe(Date.UTC(2026, 9, 14, 11, 15))
+    expect(summary.series).toHaveLength(24)
+    expect(summary.totals.records).toBe(1)
+  })
+})
+
+describe('summary cache (P4)', () => {
+  test('repeats are served from cache until data changes', () => {
+    const db = fixture([{}])
+    const first = usageSummary(db, '24h', 'UTC', now)
+    expect(usageSummary(db, '24h', 'UTC', now)).toBe(first)
+    db.insert(requests).values({ id: 'new', source: 'cliproxy', occurredAt: new Date(now - 5000), receivedAt: new Date(now), provider: 'codex', model: 'gpt-6.1-sol', failed: false, costMicros: 1 }).run()
+    const second = usageSummary(db, '24h', 'UTC', now)
+    expect(second).not.toBe(first)
+    expect(second.totals.records).toBe(2)
+  })
+
+  test('different databases never share entries', () => {
+    const a = fixture([{}])
+    const b = fixture([{}, {}])
+    expect(usageSummary(a, '24h', 'UTC', now).totals.records).toBe(1)
+    expect(usageSummary(b, '24h', 'UTC', now).totals.records).toBe(2)
+  })
+
+  test('a new window (time moving on) is recomputed', () => {
+    const db = fixture([{}])
+    const first = usageSummary(db, '24h', 'UTC', now)
+    expect(usageSummary(db, '24h', 'UTC', now + 2 * 3600e3)).not.toBe(first)
+  })
+})
+
+describe('fractional DST changes (Lord Howe, +10:30 ↔ +11:00)', () => {
+  test("a 7d window across the change starts at the first day's local midnight", () => {
+    // DST began 2026-10-04 02:00 local (+10:30 → +11:00).
+    const now = Date.UTC(2026, 9, 6, 1) // 2026-10-06 12:00 local (+11:00)
+    // 7d starts 2026-09-30 00:00 local (+10:30) = 2026-09-29T13:30Z.
+    const start = Date.UTC(2026, 8, 29, 13, 30)
+    const db = fixture([
+      { id: 'before', occurredAt: new Date(start - 10 * 60e3) }, // 23:50 local the day before
+      { id: 'first', occurredAt: new Date(start + 10 * 60e3) },
+      { id: 'after', occurredAt: new Date(Date.UTC(2026, 9, 5, 2, 10)) }, // after the change
+    ])
+    const summary = usageSummary(db, '7d', 'Australia/Lord_Howe', now)
+    expect(summary.totals.records).toBe(2)
+    expect(summary.series[0].key).toBe(start)
+    // Buckets before the change start at :30 UTC, after it on the hour.
+    expect(new Date(summary.series[0].key as number).getUTCMinutes()).toBe(30)
+    expect(new Date(summary.series.at(-1)!.key as number).getUTCMinutes()).toBe(0)
+    expect(summary.series.reduce((n, s) => n + (s.providers.openai ? 1 : 0), 0)).toBe(2)
+  })
+})
+
+describe('DST change buckets and unsupported offsets', () => {
+  test('the bucket right after a Lord Howe change starts at the change', () => {
+    // 2026-10-04: 02:00 (+10:30) jumps to 02:30 (+11:00), at 15:30Z.
+    const change = Date.UTC(2026, 9, 3, 15, 30)
+    const db = fixture([{ occurredAt: new Date(change + 5 * 60e3) }]) // 02:35 local
+    const summary = usageSummary(db, '24h', 'Australia/Lord_Howe', change + 6 * 3600e3)
+    expect(summary.series.find((s) => s.providers.openai)?.key).toBe(change)
+    const keys = summary.series.map((s) => s.key as number)
+    expect([...keys].sort((a, b) => a - b)).toEqual(keys)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test("offsets that aren't whole 15-minute slots are not used for bucketing", async () => {
+    const { slotAlignedTimeZone } = await import('./summary')
+    expect(slotAlignedTimeZone('+00:01')).toBe(false)
+    expect(slotAlignedTimeZone('Asia/Kathmandu')).toBe(true)
+    expect(slotAlignedTimeZone('Australia/Lord_Howe')).toBe(true)
+  })
+
+  test("a stored '' account stays '' rather than 'unknown'", () => {
+    const db = fixture([{ accountLabel: '' }, { accountLabel: null }])
+    expect(usageSummary(db, '24h', 'UTC', now).byAccount.map((a) => a.name).sort()).toEqual(['', 'unknown'])
+  })
+})
+
+describe('encoded keys and transactions', () => {
+  test("a NUL-character account is not merged into 'unknown'", () => {
+    const db = fixture([{ accountLabel: '\u0000' }, { accountLabel: null }])
+    expect(usageSummary(db, '24h', 'UTC', now).byAccount.map((a) => a.name).sort()).toEqual(['\u0000', 'unknown'])
+  })
+
+  test('a machine identity never matches requests without a key or IP', () => {
+    const db = fixture([{ clientIp: null, clientKeyHash: null }])
+    db.insert(machines).values({ id: 1, name: 'ghost', createdAt: new Date() }).run()
+    db.insert(machineIdentities).values([{ kind: 'ip', value: 'n', machineId: 1 }, { kind: 'key', value: '\u0000', machineId: 1 }]).run()
+    expect(usageSummary(db, '24h', 'UTC', now).byMachine.map((m) => m.name)).toEqual(['unknown'])
+  })
+
+  test("a summary inside a caller's transaction isn't cached past a rollback", () => {
+    const db = openDb(':memory:')
+    db.$client.exec('BEGIN')
+    db.insert(requests).values({ id: 'tmp', source: 'cliproxy', occurredAt: new Date(now - 5000), receivedAt: new Date(now), provider: 'codex', model: 'gpt-6.1-sol', failed: false }).run()
+    expect(usageSummary(db, '24h', 'UTC', now).totals.records).toBe(1)
+    db.$client.exec('ROLLBACK')
+    expect(usageSummary(db, '24h', 'UTC', now).totals.records).toBe(0)
   })
 })

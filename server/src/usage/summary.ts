@@ -8,12 +8,16 @@
 //   A session using two providers appears in both rows, but once in the total.
 // - Days are the viewer's local days; "7d" means today and the 6 days before;
 //   "all" starts on the day of the earliest stored request.
-// - 24h and 7d are bucketed by hour, longer ranges by day.
+// - 24h and 7d are bucketed by hour, longer ranges by day. Hours are the
+//   viewer's local hours (in +05:30 they start at :30 UTC).
+// - Totals come from usage_rollup (15-minute slots), so a summary costs the
+//   number of slots in the window, not the number of requests.
 
-import { and, eq, gte, isNotNull, min, sql } from 'drizzle-orm'
+import { and, eq, gte, min, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import type { Db } from '../db/client'
-import { machineIdentities, machines, requests, tailnetDevices } from '../db/schema'
+import { decodeKey, SLOT_MS } from '../db/rollup'
+import { machineIdentities, machines, requests, tailnetDevices, usageRollup, usageSessions } from '../db/schema'
 import { EARLIEST_PLAUSIBLE_MS } from './timestamps'
 
 export type Range = '24h' | '7d' | '30d' | '90d' | 'all'
@@ -73,18 +77,62 @@ type Window = {
   keyOf: (ms: number) => number | string
 }
 
-function hourWindow(startMs: number, now: number): Window {
-  const hours = Math.floor(now / HOUR) - startMs / HOUR + 1
-  return {
-    startMs,
-    bucket: 'hour',
-    keys: Array.from({ length: hours }, (_, i) => startMs + i * HOUR),
-    keyOf: (ms) => Math.floor(ms / HOUR) * HOUR,
+// Whether summaries can use `timeZone` now: the rollup's 15-minute slots
+// only line up with local days if the offset is a whole number of slots.
+// True for every zone in use today; not for e.g. "+00:01".
+export function slotAlignedTimeZone(timeZone: string, now = Date.now()) {
+  return offsetMs(timeZone, now) % SLOT_MS === 0
+}
+
+// The time zone's offset from UTC at an instant, in ms.
+const offsetFormats = new Map<string, Intl.DateTimeFormat>()
+function offsetMs(timeZone: string, ms: number) {
+  let format = offsetFormats.get(timeZone)
+  if (!format) offsetFormats.set(timeZone, (format = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  })))
+  const parts = format.formatToParts(ms)
+  const n = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - Math.floor(ms / 1000) * 1000
+}
+
+// Buckets of local hours: in a +05:30 zone they start at :30 past each UTC
+// hour. Each instant is aligned with its own offset, so a DST change that
+// moves the phase (Lord Howe shifts by 30 minutes) just makes one bucket
+// shorter or longer instead of shifting the whole window.
+function hourWindow(startMs: number, now: number, timeZone: string): Window {
+  const memo = new Map<number, number>()
+  const hourOf = (ms: number) => {
+    const slot = Math.floor(ms / SLOT_MS) * SLOT_MS // offsets are whole slots
+    let hour = memo.get(slot)
+    if (hour === undefined) {
+      const offset = offsetMs(timeZone, slot)
+      hour = slot - ((((slot + offset) % HOUR) + HOUR) % HOUR)
+      // Just after a DST change, the local hour began before the change (at
+      // a time that reads differently); the bucket starts at the change.
+      while (offsetMs(timeZone, hour) !== offset) hour += SLOT_MS
+      memo.set(slot, hour)
+    }
+    return hour
   }
+  const first = hourOf(startMs)
+  const keys: number[] = []
+  for (let slot = first; slot <= now; slot += SLOT_MS) {
+    const key = hourOf(slot)
+    if (key !== keys[keys.length - 1]) keys.push(key)
+  }
+  return { startMs: first, bucket: 'hour', keys, keyOf: hourOf }
 }
 
 function windowFor(range: Range, timeZone: string, now: number, earliestMs: number | null): Window {
-  if (range === '24h') return hourWindow(Math.floor(now / HOUR) * HOUR - 23 * HOUR, now)
+  if (range === '24h') return hourWindow(now - 23 * HOUR, now, timeZone)
 
   const dayOf = dayKeyFormatter(timeZone)
   // Built newest first and reversed once (unshift per day is quadratic).
@@ -98,10 +146,11 @@ function windowFor(range: Range, timeZone: string, now: number, earliestMs: numb
   }
   keys.reverse()
 
-  // First whole hour that falls on the first day of the window.
-  let startMs = Math.floor((now - (keys.length + 1) * 86400e3) / HOUR) * HOUR
-  while (dayOf(startMs) < keys[0]) startMs += HOUR
-  if (range === '7d') return hourWindow(startMs, now)
+  // The first slot of the window's first local day: its local midnight, since
+  // every zone's offset is a whole number of slots.
+  let startMs = Math.floor((now - (keys.length + 1) * 86400e3) / SLOT_MS) * SLOT_MS
+  while (dayOf(startMs) < keys[0]) startMs += SLOT_MS
+  if (range === '7d') return hourWindow(startMs, now, timeZone)
   return { startMs, bucket: 'day', keys, keyOf: dayOf }
 }
 
@@ -113,32 +162,25 @@ const byIp = alias(machineIdentities, 'by_ip')
 const keyMachine = alias(machines, 'key_machine')
 const ipMachine = alias(machines, 'ip_machine')
 
+const rollupKey = sql.raw(decodeKey('"usage_rollup"."client_key_hash"'))
+const rollupIp = sql.raw(decodeKey('"usage_rollup"."client_ip"'))
 const machine = {
-  name: sql<string>`coalesce(${keyMachine.name}, ${ipMachine.name}, ${tailnetDevices.name}, ${requests.clientIp}, 'unknown')`,
+  name: sql<string>`coalesce(${keyMachine.name}, ${ipMachine.name}, ${tailnetDevices.name}, ${rollupIp}, 'unknown')`,
   nameSource: sql<'custom' | 'tailscale' | null>`case
     when ${keyMachine.name} is not null or ${ipMachine.name} is not null then 'custom'
     when ${tailnetDevices.name} is not null then 'tailscale' end`,
   // The identity a rename applies to: the dedicated key if there is one, else the IP.
   identityKind: sql<'key' | 'ip'>`case when ${keyMachine.name} is not null then 'key' else 'ip' end`,
-  identityValue: sql<string | null>`case when ${keyMachine.name} is not null then ${requests.clientKeyHash} else ${requests.clientIp} end`,
+  identityValue: sql<string | null>`case when ${keyMachine.name} is not null then ${rollupKey} else ${rollupIp} end`,
 }
 
-// --- Summary ---------------------------------------------------------------------
-
-export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.now()) {
-  const earliest = db.select({ at: min(requests.occurredAt) }).from(requests).get()?.at
-  const window = windowFor(range, timeZone, now, earliest ? earliest.getTime() : null)
-  const inWindow = gte(requests.occurredAt, new Date(window.startMs))
-
-  // One row per hour × provider × model × account × machine; everything else is
-  // built from these.
-  const hour = sql<number>`(${requests.occurredAt} / ${HOUR}) * ${HOUR}`
-  // The model identifies its vendor even when a client routes it through a
-  // different harness or an OpenAI-compatible endpoint. Resolve at query time
-  // so old transcript imports (whose provider came from the harness) work too.
-  const modelPath = sql`'/' || lower(trim(${requests.model}))`
-  const upstream = sql`lower(trim(${requests.provider}))`
-  const provider = sql<string>`case
+// The vendor serving a model, from the model name when it says (so requests
+// routed through another harness or an OpenAI-compatible endpoint still
+// count for their vendor), else from the upstream provider.
+function providerOf(model: typeof usageRollup.model | typeof usageSessions.model, upstreamProvider: typeof usageRollup.provider | typeof usageSessions.provider) {
+  const modelPath = sql`'/' || lower(trim(${model}))`
+  const upstream = sql`lower(trim(${upstreamProvider}))`
+  return sql<string>`case
     when ${modelPath} glob '*/claude-*' then 'anthropic'
     when ${modelPath} glob '*/gpt-*'
       or ${modelPath} glob '*/chatgpt-*'
@@ -150,46 +192,97 @@ export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.
     when ${upstream} in ('google', 'gemini') then 'gemini'
     when ${upstream} in ('', 't3', 't3-code', 'claude-code', 'other', 'unknown') then 'unknown'
     else ${upstream} end`
-  const account = sql<string>`coalesce(${requests.accountLabel}, 'unknown')`
+}
+
+// --- Summary ---------------------------------------------------------------------
+
+// Summaries are reused until the data or the window changes: dashboards
+// poll, and with no new requests every poll would recompute the same answer.
+// total_changes() counts this connection's writes (collector, API, triggers);
+// data_version moves when another process (the CLI importers) commits.
+const CACHE_SIZE = 32
+const caches = new WeakMap<Db, Map<string, UsageSummary>>()
+
+export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.now()): UsageSummary {
+  // Inside a caller's transaction the result may include uncommitted writes
+  // that a rollback would undo (total_changes() doesn't rewind), so it
+  // mustn't be cached or served from cache.
+  if (db.$client.inTransaction) return computeSummary(db, range, timeZone, summaryWindow(db, range, timeZone, now))
+  // One read transaction: the version check, totals and sessions all see the
+  // same snapshot, even if another process commits meanwhile.
+  return db.$client.transaction(() => cachedSummary(db, range, timeZone, now))()
+}
+
+function summaryWindow(db: Db, range: Range, timeZone: string, now: number) {
+  const earliest = db.select({ at: min(requests.occurredAt) }).from(requests).get()?.at
+  return windowFor(range, timeZone, now, earliest ? earliest.getTime() : null)
+}
+
+function cachedSummary(db: Db, range: Range, timeZone: string, now: number): UsageSummary {
+  const window = summaryWindow(db, range, timeZone, now)
+  const { changes } = db.$client.query('SELECT total_changes() AS changes').get() as { changes: number }
+  const { data_version: version } = db.$client.query('PRAGMA data_version').get() as { data_version: number }
+  const cacheKey = JSON.stringify([range, timeZone, window.startMs, window.keys.length, window.keys.at(-1), changes, version])
+  let cache = caches.get(db)
+  if (!cache) caches.set(db, (cache = new Map()))
+  const cached = cache.get(cacheKey)
+  if (cached) return cached
+  const summary = computeSummary(db, range, timeZone, window)
+  if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!)
+  cache.set(cacheKey, summary)
+  return summary
+}
+
+function computeSummary(db: Db, range: Range, timeZone: string, window: Window) {
+
+  // One row per slot × provider × model × account × machine; everything else
+  // is built from these.
+  const provider = providerOf(usageRollup.model, usageRollup.provider)
+  const account = sql<string>`coalesce(${sql.raw(decodeKey('"usage_rollup"."account_label"'))}, 'unknown')`
   const groups = db
     .select({
-      hour,
+      slot: usageRollup.slot,
       provider,
-      model: requests.model,
+      model: usageRollup.model,
       account,
       ...machine,
-      costMicros: sql<number>`coalesce(sum(${requests.costMicros}), 0)`,
-      cacheSavingsMicros: sql<number>`coalesce(sum(${requests.cacheSavingsMicros}), 0)`,
-      records: sql<number>`count(*)`,
-      unpricedRecords: sql<number>`coalesce(sum(${requests.costMicros} is null), 0)`,
-      uncachedTokens: sql<number>`coalesce(sum(${requests.inputTokens}), 0)`,
-      cachedTokens: sql<number>`coalesce(sum(${requests.cacheReadTokens}), 0)`,
-      cacheWriteTokens: sql<number>`coalesce(sum(${requests.cacheWriteTokens}), 0)`,
-      outputTokens: sql<number>`coalesce(sum(${requests.outputTokens}), 0)`,
+      costMicros: sql<number>`sum(${usageRollup.costMicros})`,
+      cacheSavingsMicros: sql<number>`sum(${usageRollup.cacheSavingsMicros})`,
+      records: sql<number>`sum(${usageRollup.records})`,
+      unpricedRecords: sql<number>`sum(${usageRollup.unpricedRecords})`,
+      uncachedTokens: sql<number>`sum(${usageRollup.inputTokens})`,
+      cachedTokens: sql<number>`sum(${usageRollup.cacheReadTokens})`,
+      cacheWriteTokens: sql<number>`sum(${usageRollup.cacheWriteTokens})`,
+      outputTokens: sql<number>`sum(${usageRollup.outputTokens})`,
     })
-    .from(requests)
-    .leftJoin(byKey, and(eq(byKey.kind, 'key'), eq(byKey.value, requests.clientKeyHash)))
+    .from(usageRollup)
+    .leftJoin(byKey, and(eq(byKey.kind, 'key'), sql`${byKey.value} = ${rollupKey}`))
     .leftJoin(keyMachine, eq(keyMachine.id, byKey.machineId))
-    .leftJoin(byIp, and(eq(byIp.kind, 'ip'), eq(byIp.value, requests.clientIp)))
+    .leftJoin(byIp, and(eq(byIp.kind, 'ip'), sql`${byIp.value} = ${rollupIp}`))
     .leftJoin(ipMachine, eq(ipMachine.id, byIp.machineId))
-    .leftJoin(tailnetDevices, eq(tailnetDevices.ip, requests.clientIp))
-    .where(inWindow)
-    .groupBy(hour, provider, requests.model, account, machine.name, machine.identityKind, machine.identityValue)
+    .leftJoin(tailnetDevices, sql`${tailnetDevices.ip} = ${rollupIp}`)
+    .where(gte(usageRollup.slot, window.startMs))
+    .groupBy(usageRollup.slot, provider, usageRollup.model, account, machine.name, machine.identityKind, machine.identityValue)
     .all()
     .map((g) => ({ ...g, processedTokens: g.uncachedTokens + g.cachedTokens + g.cacheWriteTokens + g.outputTokens }))
 
-  const sessionIdentity = sql`json_array(coalesce(${requests.tool}, 'other'), ${requests.sessionId})`
+  // Sessions active in the window: their last request is in it (windows run
+  // up to now). Distinct per (tool, session id), as one session can use
+  // several models.
+  const sessionProvider = providerOf(usageSessions.model, usageSessions.provider)
+  const sessionIdentity = sql`json_array(${usageSessions.tool}, ${usageSessions.sessionId})`
+  const activeSessions = gte(usageSessions.lastAt, window.startMs)
   const sessions = db
-    .select({ provider, sessions: sql<number>`count(distinct ${sessionIdentity})` })
-    .from(requests)
-    .where(and(inWindow, isNotNull(requests.sessionId)))
-    .groupBy(provider)
+    .select({ provider: sessionProvider, sessions: sql<number>`count(distinct ${sessionIdentity})` })
+    .from(usageSessions)
+    .where(activeSessions)
+    .groupBy(sessionProvider)
     .all()
   const sessionsOf = new Map(sessions.map((s) => [s.provider, s.sessions]))
   const totalSessions = db
     .select({ count: sql<number>`count(distinct ${sessionIdentity})` })
-    .from(requests)
-    .where(and(inWindow, isNotNull(requests.sessionId)))
+    .from(usageSessions)
+    .where(activeSessions)
     .get()?.count ?? 0
 
   const totals = emptyTotals()
@@ -231,7 +324,7 @@ export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.
       m.identities.push({ kind: g.identityKind, value: g.identityValue })
     }
 
-    const bucket = series.get(window.keyOf(g.hour))
+    const bucket = series.get(window.keyOf(g.slot))
     if (bucket) {
       for (const point of [getOr(bucket.providers, g.provider, emptyPoint), getOr(bucket.machines, g.name, emptyPoint)]) {
         point.costMicros += g.costMicros
@@ -257,7 +350,7 @@ export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.
   }
 }
 
-export type UsageSummary = ReturnType<typeof usageSummary>
+export type UsageSummary = ReturnType<typeof computeSummary>
 
 const emptyPoint = () => ({ costMicros: 0, tokens: 0 })
 

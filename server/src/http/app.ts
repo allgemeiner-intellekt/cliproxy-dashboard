@@ -8,7 +8,7 @@ import { importTranscripts, type TranscriptFile } from '../import/importer'
 import { clearIdentityName, listDevices, nameIdentity, type IdentityKind } from '../machines'
 import type { Tailnet } from '../tailnet'
 import type { PriceBook } from '../usage/pricing'
-import { RANGES, usageSummary, type Range } from '../usage/summary'
+import { RANGES, slotAlignedTimeZone, usageSummary, type Range } from '../usage/summary'
 import { errorFields, log } from '../log'
 import { requireJsonWrites, requireKnownHost } from './guard'
 
@@ -129,9 +129,11 @@ function accessLog() {
   }
 }
 
+// A time zone the summary can bucket by; anything else falls back to UTC.
 function validTimeZone(tz: string | undefined) {
   try {
-    return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone
+    const zone = new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone
+    return slotAlignedTimeZone(zone) ? zone : 'UTC'
   } catch {
     return 'UTC'
   }
