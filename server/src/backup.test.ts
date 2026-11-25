@@ -48,7 +48,11 @@ describe('backupDatabase (E10)', () => {
       const a = backupDatabase(path, join(dir, 'b'), at)
       const b = backupDatabase(path, join(dir, 'b'), new Date(at.getTime() + 1))
       expect(a).not.toBe(b)
-      expect(a).toEndWith('usage-20261124T153000001Z.db')
+      expect(a).toMatch(/usage-20261124T153000001Z-[0-9a-f]{8}\.db$/)
+      // Even the very same millisecond doesn't overwrite.
+      const c = backupDatabase(path, join(dir, 'b'), at)
+      expect(c).not.toBe(a)
+      expect(readdirSync(join(dir, 'b'))).toHaveLength(3)
     }))
 })
 
@@ -61,8 +65,8 @@ describe('pruneBackups', () => {
       for (let i = 0; i < 4; i++) backupDatabase(path, out, new Date(Date.UTC(2026, 0, 1 + i)))
       Bun.write(join(out, 'notes.txt'), 'keep me')
       const removed = pruneBackups(out, 2)
-      expect(removed).toEqual(['usage-20260101T000000000Z.db', 'usage-20260102T000000000Z.db'])
-      expect(readdirSync(out).sort()).toEqual(['notes.txt', 'usage-20260103T000000000Z.db', 'usage-20260104T000000000Z.db'])
+      expect(removed.map((f) => f.slice(0, 24))).toEqual(['usage-20260101T000000000', 'usage-20260102T000000000'])
+      expect(readdirSync(out).sort().map((f) => f.slice(0, 24))).toEqual(['notes.txt', 'usage-20260103T000000000', 'usage-20260104T000000000'])
     }))
 })
 

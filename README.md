@@ -109,7 +109,7 @@ CLIProxyAPI deletes usage records once they're read, so `data/usage.db` is the o
 bun server/src/backup.ts [dir] [--keep N]   # or: npm run backup
 ```
 
-This writes a consistent snapshot, `usage-<UTC time>.db`, to `dir` (default `data/backups/`), checks it, and with `--keep` deletes all but the newest N. It's safe while the server is running, because it uses SQLite's `VACUUM INTO` and never blocks the collector. Don't use `cp` on `usage.db`: in WAL mode, recent writes are in `usage.db-wal`, and a plain copy can miss them or catch a write halfway.
+This writes a consistent snapshot, `usage-<UTC time>-<random>.db`, to `dir` (default `data/backups/`), checks it, and with `--keep` deletes all but the newest N. It's safe while the server is running, because it uses SQLite's `VACUUM INTO` and never blocks the collector. Don't use `cp` on `usage.db`: in WAL mode, recent writes are in `usage.db-wal`, and a plain copy can miss them or catch a write halfway.
 
 Run it on a schedule, for example with a systemd user timer:
 

@@ -202,3 +202,28 @@ describe('fractional DST changes (Lord Howe, +10:30 ↔ +11:00)', () => {
     expect(summary.series.reduce((n, s) => n + (s.providers.openai ? 1 : 0), 0)).toBe(2)
   })
 })
+
+describe('DST change buckets and unsupported offsets', () => {
+  test('the bucket right after a Lord Howe change starts at the change', () => {
+    // 2026-10-04: 02:00 (+10:30) jumps to 02:30 (+11:00), at 15:30Z.
+    const change = Date.UTC(2026, 9, 3, 15, 30)
+    const db = fixture([{ occurredAt: new Date(change + 5 * 60e3) }]) // 02:35 local
+    const summary = usageSummary(db, '24h', 'Australia/Lord_Howe', change + 6 * 3600e3)
+    expect(summary.series.find((s) => s.providers.openai)?.key).toBe(change)
+    const keys = summary.series.map((s) => s.key as number)
+    expect([...keys].sort((a, b) => a - b)).toEqual(keys)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test("offsets that aren't whole 15-minute slots are not used for bucketing", async () => {
+    const { slotAlignedTimeZone } = await import('./summary')
+    expect(slotAlignedTimeZone('+00:01')).toBe(false)
+    expect(slotAlignedTimeZone('Asia/Kathmandu')).toBe(true)
+    expect(slotAlignedTimeZone('Australia/Lord_Howe')).toBe(true)
+  })
+
+  test("a stored '' account stays '' rather than 'unknown'", () => {
+    const db = fixture([{ accountLabel: '' }, { accountLabel: null }])
+    expect(usageSummary(db, '24h', 'UTC', now).byAccount.map((a) => a.name).sort()).toEqual(['', 'unknown'])
+  })
+})

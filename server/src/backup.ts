@@ -9,6 +9,7 @@
 
 import { Database } from 'bun:sqlite'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { storageEnv } from './env'
@@ -16,12 +17,14 @@ import { storageEnv } from './env'
 const PREFIX = 'usage-'
 const SUFFIX = '.db'
 
-// Snapshot of `dbPath` as `<dir>/usage-<UTC timestamp>.db`; returns its path.
+// Snapshot of `dbPath` as `<dir>/usage-<UTC timestamp>-<random>.db`; returns its path.
 export function backupDatabase(dbPath: string, dir: string, now = new Date()): string {
   if (!existsSync(dbPath)) throw new Error(`no database at ${dbPath}`)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
+  // The random suffix keeps two backups in the same millisecond (or running
+  // at once) from sharing a staging or final file; names still sort by time.
   const stamp = now.toISOString().replace(/[-:.]/g, '') // 20261124T153000123Z
-  const target = join(dir, `${PREFIX}${stamp}${SUFFIX}`)
+  const target = join(dir, `${PREFIX}${stamp}-${randomBytes(4).toString('hex')}${SUFFIX}`)
   const tmp = `${target}.partial`
   rmSync(tmp, { force: true })
   // Owner-only from the first byte: VACUUM INTO would create the file with

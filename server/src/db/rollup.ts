@@ -4,21 +4,31 @@
 // Triggers apply every insert, update and delete of a request to its slot,
 // so all writers (collector, importers, repricing, manual SQL) stay in sync
 // without knowing the rollup exists. They're created here rather than in a
-// migration because drizzle schemas can't declare triggers; CREATE ... IF NOT
-// EXISTS makes this safe on every start.
+// migration because drizzle schemas can't declare triggers, and checked on
+// every open: a missing or changed trigger is replaced and the tables are
+// rebuilt, since writes made without it weren't applied.
+//
+// Contract for writers: INSERT OR REPLACE deletes the old row without firing
+// delete triggers unless `PRAGMA recursive_triggers = ON`, which openDb()
+// sets. Other connections (e.g. the sqlite3 CLI) must set it too or avoid
+// REPLACE; plain INSERT, UPDATE, DELETE and upserts are always safe.
 
 import type { Database } from 'bun:sqlite'
 
 export const SLOT_MS = 15 * 60e3
+
+// Stands for NULL in the rollup's key columns, which must be NOT NULL to be
+// part of the primary key. A NUL character, so a real '' keeps its meaning.
+export const NULL_KEY = 'char(0)'
 
 // The rollup key and sums for a request row (`r` is NEW or OLD).
 const key = (r: string) => ({
   slot: `(${r}.occurred_at / ${SLOT_MS}) * ${SLOT_MS}`,
   provider: `${r}.provider`,
   model: `${r}.model`,
-  account_label: `coalesce(${r}.account_label, '')`,
-  client_key_hash: `coalesce(${r}.client_key_hash, '')`,
-  client_ip: `coalesce(${r}.client_ip, '')`,
+  account_label: `coalesce(${r}.account_label, ${NULL_KEY})`,
+  client_key_hash: `coalesce(${r}.client_key_hash, ${NULL_KEY})`,
+  client_ip: `coalesce(${r}.client_ip, ${NULL_KEY})`,
 })
 const sums = (r: string) => ({
   records: '1',
@@ -67,14 +77,15 @@ function forgetSession(r: string) {
     UPDATE usage_sessions SET last_at = (SELECT max(occurred_at) ${same}) WHERE ${sessionKey(r)};`
 }
 
-const TRIGGERS = [
-  `CREATE TRIGGER IF NOT EXISTS usage_sessions_insert AFTER INSERT ON requests WHEN NEW.session_id IS NOT NULL BEGIN ${touchSession('NEW')} END`,
-  `CREATE TRIGGER IF NOT EXISTS usage_sessions_delete AFTER DELETE ON requests WHEN OLD.session_id IS NOT NULL BEGIN ${forgetSession('OLD')} END`,
-  `CREATE TRIGGER IF NOT EXISTS usage_sessions_update AFTER UPDATE OF ${SESSION_WATCHED.join(', ')} ON requests BEGIN ${forgetSession('OLD')} ${touchSession('NEW')} END`,
-  `CREATE TRIGGER IF NOT EXISTS usage_rollup_insert AFTER INSERT ON requests BEGIN ${add('NEW')} END`,
-  `CREATE TRIGGER IF NOT EXISTS usage_rollup_delete AFTER DELETE ON requests BEGIN ${subtract('OLD')} END`,
-  `CREATE TRIGGER IF NOT EXISTS usage_rollup_update AFTER UPDATE OF ${WATCHED.join(', ')} ON requests BEGIN ${subtract('OLD')} ${add('NEW')} END`,
-]
+// [name, DDL]; the DDL is exactly what sqlite_master stores, for comparison.
+const TRIGGERS: [string, string][] = [
+  ['usage_sessions_insert', `AFTER INSERT ON requests WHEN NEW.session_id IS NOT NULL BEGIN ${touchSession('NEW')} END`],
+  ['usage_sessions_delete', `AFTER DELETE ON requests WHEN OLD.session_id IS NOT NULL BEGIN ${forgetSession('OLD')} END`],
+  ['usage_sessions_update', `AFTER UPDATE OF ${SESSION_WATCHED.join(', ')} ON requests BEGIN ${forgetSession('OLD')} ${touchSession('NEW')} END`],
+  ['usage_rollup_insert', `AFTER INSERT ON requests BEGIN ${add('NEW')} END`],
+  ['usage_rollup_delete', `AFTER DELETE ON requests BEGIN ${subtract('OLD')} END`],
+  ['usage_rollup_update', `AFTER UPDATE OF ${WATCHED.join(', ')} ON requests BEGIN ${subtract('OLD')} ${add('NEW')} END`],
+].map(([name, body]) => [name, `CREATE TRIGGER ${name} ${body}`])
 
 // Recomputes both tables from `requests`.
 export function rebuildRollup(sqlite: Database) {
@@ -92,20 +103,27 @@ export function rebuildRollup(sqlite: Database) {
   })()
 }
 
-// Installs the triggers, and rebuilds the rollup if it doesn't account for
-// every request: the first start after the migration, or rows written while
-// the triggers were missing (e.g. by an older build).
+// Installs or repairs the triggers, and rebuilds both tables if a trigger
+// was missing or different (writes since then weren't applied) or the
+// rollup doesn't account for every request. One write transaction, so no
+// write slips in between the check and the rebuild.
 export function ensureRollup(sqlite: Database) {
-  for (const trigger of TRIGGERS) sqlite.exec(trigger)
-  const { requests } = sqlite.query('SELECT count(*) AS requests FROM requests').get() as { requests: number }
-  const { rolled } = sqlite.query('SELECT coalesce(sum(records), 0) AS rolled FROM usage_rollup').get() as { rolled: number }
-  // Sessions can't be checked as cheaply; an empty table next to requests
-  // with sessions means it was never built.
-  const sessionsMissing =
-    !sqlite.query('SELECT 1 FROM usage_sessions LIMIT 1').get() && !!sqlite.query('SELECT 1 FROM requests WHERE session_id IS NOT NULL LIMIT 1').get()
-  if (requests !== rolled || sessionsMissing) {
-    const started = performance.now()
-    rebuildRollup(sqlite)
-    console.log(`[db] rebuilt usage rollup from ${requests} requests in ${Math.round(performance.now() - started)}ms`)
-  }
+  sqlite
+    .transaction(() => {
+      let repaired = false
+      for (const [name, ddl] of TRIGGERS) {
+        const existing = sqlite.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string } | null
+        if (existing?.sql === ddl) continue
+        sqlite.exec(`DROP TRIGGER IF EXISTS ${name}`)
+        sqlite.exec(ddl)
+        repaired = true
+      }
+      const { requests } = sqlite.query('SELECT count(*) AS requests FROM requests').get() as { requests: number }
+      const { rolled } = sqlite.query('SELECT coalesce(sum(records), 0) AS rolled FROM usage_rollup').get() as { rolled: number }
+      if (!repaired && requests === rolled) return
+      const started = performance.now()
+      rebuildRollup(sqlite)
+      if (requests) console.log(`[db] rebuilt usage rollup from ${requests} requests in ${Math.round(performance.now() - started)}ms`)
+    })
+    .immediate()
 }

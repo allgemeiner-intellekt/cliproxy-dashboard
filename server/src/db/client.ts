@@ -27,6 +27,9 @@ export function openDb(configuredPath: string) {
   sqlite.exec('PRAGMA journal_mode = WAL;')
   sqlite.exec('PRAGMA synchronous = NORMAL;')
   sqlite.exec('PRAGMA foreign_keys = ON;')
+  // INSERT OR REPLACE must fire delete triggers, or usage_rollup keeps the
+  // replaced row (see db/rollup.ts).
+  sqlite.exec('PRAGMA recursive_triggers = ON;')
   if (onDisk) restrictToOwner(path)
 
   const db = drizzle(sqlite, { schema })

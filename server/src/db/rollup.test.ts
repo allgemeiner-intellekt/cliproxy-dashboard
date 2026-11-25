@@ -39,7 +39,7 @@ const row = (overrides: Partial<typeof requests.$inferInsert> = {}): typeof requ
 })
 
 describe('usage rollup triggers', () => {
-  test('inserts aggregate into 15-minute slots, nulls as empty keys', () => {
+  test('inserts aggregate into 15-minute slots, NULLs as the NUL key', () => {
     const db = openDb(':memory:')
     db.insert(requests)
       .values([
@@ -52,8 +52,8 @@ describe('usage rollup triggers', () => {
     expect(rollup).toHaveLength(2)
     expect(rollup[0]).toMatchObject({
       slot: Date.UTC(2026, 0, 1, 10, 0),
-      accountLabel: '',
-      clientKeyHash: '',
+      accountLabel: '\u0000',
+      clientKeyHash: '\u0000',
       clientIp: '10.0.0.1',
       records: 2,
       unpricedRecords: 1,
@@ -127,6 +127,26 @@ describe('usage rollup triggers', () => {
     expectConsistent(db)
   })
 
+  test('INSERT OR REPLACE moves the replaced row out of its slot and session', () => {
+    const db = openDb(':memory:')
+    db.insert(requests).values(row({ id: 'x', sessionId: 'A', occurredAt: new Date(Date.UTC(2026, 0, 1, 1)) })).run()
+    db.$client.exec(
+      `INSERT OR REPLACE INTO requests (id, source, occurred_at, received_at, provider, model, failed, session_id)
+       VALUES ('x', 'cliproxy', ${Date.UTC(2026, 0, 2)}, 0, 'codex', 'gpt-6.1-sol', 0, 'B')`,
+    )
+    const { rollup, sessions } = snapshot(db)
+    expect(rollup.map((r) => [r.slot, r.records])).toEqual([[Date.UTC(2026, 0, 2), 1]])
+    expect(sessions.map((x) => x.sessionId)).toEqual(['B'])
+    expectConsistent(db)
+  })
+
+  test("a real '' is kept apart from NULL", () => {
+    const db = openDb(':memory:')
+    db.insert(requests).values([row({ accountLabel: '', clientIp: '' }), row({ accountLabel: null, clientIp: null })]).run()
+    expect(snapshot(db).rollup).toHaveLength(2)
+    expectConsistent(db)
+  })
+
   test('a randomized mix of writes stays consistent', () => {
     const db = openDb(':memory:')
     let seed = 7
@@ -174,6 +194,29 @@ describe('ensureRollup', () => {
       const reopened = openDb(path)
       expect(reopened.select({ n: sql<number>`sum(records)` }).from(usageRollup).get()?.n).toBe(2)
       expect(reopened.select().from(usageSessions).all()).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a missing or altered trigger is reinstalled and the tables rebuilt', () => {
+    const { mkdtempSync, rmSync } = require('node:fs') as typeof import('node:fs')
+    const dir = mkdtempSync(`${require('node:os').tmpdir()}/rollup-test-`)
+    try {
+      const path = `${dir}/usage.db`
+      const db = openDb(path)
+      db.insert(requests).values(row({ id: 'x', sessionId: 'S', model: 'old' })).run()
+      // Updates made while the update triggers were missing: counts still match.
+      db.$client.exec('DROP TRIGGER usage_rollup_update; DROP TRIGGER usage_sessions_update')
+      db.$client.exec("UPDATE requests SET model = 'new', cost_micros = 9, session_id = 'T' WHERE id = 'x'")
+      db.$client.close()
+
+      const reopened = openDb(path)
+      const { rollup, sessions } = snapshot(reopened)
+      expect(rollup.map((r) => [r.model, r.costMicros])).toEqual([['new', 9]])
+      expect(sessions.map((x) => x.sessionId)).toEqual(['T'])
+      const triggers = reopened.$client.query("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").get() as { n: number }
+      expect(triggers.n).toBe(6)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -49,7 +49,10 @@ type LiteLlmEntry = {
 const perMTok = (usdPerToken: number) => Math.round(usdPerToken * 1e12)
 
 // Providers whose own list prices we prefer when a model appears under several.
-const FIRST_PARTY = ['anthropic', 'openai', 'meta', 'xai']
+// LiteLLM files Google's own prices under 'gemini' (AI Studio) and
+// 'vertex_ai-language-models'; resellers can list the bare name without
+// Google's long-context tier.
+const FIRST_PARTY = ['anthropic', 'openai', 'gemini', 'vertex_ai-language-models', 'meta', 'xai']
 
 // Placeholder or alias names that don't identify a billable model.
 const NEVER_PRICED = new Set(['<synthetic>', 'synthetic', 'opus', 'sonnet', 'haiku', 'fable'])

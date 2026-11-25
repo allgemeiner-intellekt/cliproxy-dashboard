@@ -251,3 +251,22 @@ describe('lookup cache (P5)', () => {
     expect(b.lookup(' GPT-6.1-Sol ')?.pricedAs).toBe('gpt-6.1-sol')
   })
 })
+
+describe('first-party preference', () => {
+  test("a bare Gemini name takes Google's listing, with its long-context tier, over a reseller's", () => {
+    const b = new PriceBook('/nonexistent/prices.json')
+    ;(b as unknown as { setTable: (t: unknown) => void }).setTable({
+      'deepinfra/google/gemini-2.5-pro': { litellm_provider: 'deepinfra', input_cost_per_token: 8.75e-7, output_cost_per_token: 7e-6 },
+      'gemini/gemini-2.5-pro': {
+        litellm_provider: 'gemini',
+        input_cost_per_token: 1.25e-6,
+        output_cost_per_token: 1e-5,
+        tiers: { 200000: { input_cost_per_token: 2.5e-6, output_cost_per_token: 1.5e-5 } },
+      },
+    })
+    const priced = b.lookup('gemini-2.5-pro')
+    expect(priced?.pricedAs).toBe('gemini/gemini-2.5-pro')
+    // 250k input + 10k output at the >200k rates: $0.625 + $0.15.
+    expect(costOf({ input: 250_000, cacheRead: 0, cacheWrite: 0, output: 10_000 }, priced!.rates)).toBe(775_000)
+  })
+})

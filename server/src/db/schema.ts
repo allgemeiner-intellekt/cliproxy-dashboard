@@ -76,7 +76,8 @@ export const requests = sqliteTable(
 //
 // Kept exact by triggers on `requests` (insert, update, delete) that live in
 // db/rollup.ts, not here: drizzle schemas can't declare triggers. Nullable
-// grouping columns are stored as '' so they can be part of the key.
+// grouping columns store NULL as a NUL character (NULL_KEY in rollup.ts), so
+// they can be part of the key and a real '' keeps its meaning.
 export const usageRollup = sqliteTable(
   'usage_rollup',
   {
@@ -147,4 +148,3 @@ export const tailnetDevices = sqliteTable('tailnet_devices', {
   online: integer('online', { mode: 'boolean' }),
   syncedAt: integer('synced_at', { mode: 'timestamp_ms' }).notNull(),
 })
-

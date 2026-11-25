@@ -16,7 +16,7 @@
 import { and, eq, gte, min, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import type { Db } from '../db/client'
-import { SLOT_MS } from '../db/rollup'
+import { NULL_KEY, SLOT_MS } from '../db/rollup'
 import { machineIdentities, machines, requests, tailnetDevices, usageRollup, usageSessions } from '../db/schema'
 import { EARLIEST_PLAUSIBLE_MS } from './timestamps'
 
@@ -77,6 +77,13 @@ type Window = {
   keyOf: (ms: number) => number | string
 }
 
+// Whether summaries can use `timeZone` now: the rollup's 15-minute slots
+// only line up with local days if the offset is a whole number of slots.
+// True for every zone in use today; not for e.g. "+00:01".
+export function slotAlignedTimeZone(timeZone: string, now = Date.now()) {
+  return offsetMs(timeZone, now) % SLOT_MS === 0
+}
+
 // The time zone's offset from UTC at an instant, in ms.
 const offsetFormats = new Map<string, Intl.DateTimeFormat>()
 function offsetMs(timeZone: string, ms: number) {
@@ -106,8 +113,11 @@ function hourWindow(startMs: number, now: number, timeZone: string): Window {
     const slot = Math.floor(ms / SLOT_MS) * SLOT_MS // offsets are whole slots
     let hour = memo.get(slot)
     if (hour === undefined) {
-      const local = slot + offsetMs(timeZone, slot)
-      hour = slot - (((local % HOUR) + HOUR) % HOUR)
+      const offset = offsetMs(timeZone, slot)
+      hour = slot - ((((slot + offset) % HOUR) + HOUR) % HOUR)
+      // Just after a DST change, the local hour began before the change (at
+      // a time that reads differently); the bucket starts at the change.
+      while (offsetMs(timeZone, hour) !== offset) hour += SLOT_MS
       memo.set(slot, hour)
     }
     return hour
@@ -152,8 +162,8 @@ const byIp = alias(machineIdentities, 'by_ip')
 const keyMachine = alias(machines, 'key_machine')
 const ipMachine = alias(machines, 'ip_machine')
 
-const rollupKey = sql`nullif(${usageRollup.clientKeyHash}, '')`
-const rollupIp = sql`nullif(${usageRollup.clientIp}, '')`
+const rollupKey = sql`nullif(${usageRollup.clientKeyHash}, ${sql.raw(NULL_KEY)})`
+const rollupIp = sql`nullif(${usageRollup.clientIp}, ${sql.raw(NULL_KEY)})`
 const machine = {
   name: sql<string>`coalesce(${keyMachine.name}, ${ipMachine.name}, ${tailnetDevices.name}, ${rollupIp}, 'unknown')`,
   nameSource: sql<'custom' | 'tailscale' | null>`case
@@ -194,6 +204,12 @@ const CACHE_SIZE = 32
 const caches = new WeakMap<Db, Map<string, UsageSummary>>()
 
 export function usageSummary(db: Db, range: Range, timeZone: string, now = Date.now()): UsageSummary {
+  // One read transaction: the version check, totals and sessions all see the
+  // same snapshot, even if another process commits meanwhile.
+  return db.$client.transaction(() => cachedSummary(db, range, timeZone, now))()
+}
+
+function cachedSummary(db: Db, range: Range, timeZone: string, now: number): UsageSummary {
   const earliest = db.select({ at: min(requests.occurredAt) }).from(requests).get()?.at
   const window = windowFor(range, timeZone, now, earliest ? earliest.getTime() : null)
   const { changes } = db.$client.query('SELECT total_changes() AS changes').get() as { changes: number }
@@ -214,7 +230,7 @@ function computeSummary(db: Db, range: Range, timeZone: string, window: Window) 
   // One row per slot × provider × model × account × machine; everything else
   // is built from these.
   const provider = providerOf(usageRollup.model, usageRollup.provider)
-  const account = sql<string>`coalesce(nullif(${usageRollup.accountLabel}, ''), 'unknown')`
+  const account = sql<string>`coalesce(nullif(${usageRollup.accountLabel}, ${sql.raw(NULL_KEY)}), 'unknown')`
   const groups = db
     .select({
       slot: usageRollup.slot,
