@@ -101,6 +101,12 @@ docker run -d --name cliproxy-dashboard --restart unless-stopped \
 
 The image has a `HEALTHCHECK`. It fails, and `GET /api/health` returns 503, once the collector has been disconnected from CLIProxyAPI for more than 2 minutes.
 
+### Auto-deploy hook
+
+[`deploy/hook.ts`](deploy/hook.ts) runs on the TrueNAS host and redeploys the app when CI asks. CI calls it after `:main` is promoted, if the `DEPLOY_HOOK_URL` repository variable and the `DEPLOY_SECRET` secret are set. Every request is HMAC-signed with a timestamp. A deploy request is accepted only once within the 5-minute window, and job status requires a signature too. The file header has the details.
+
+The hook runs separately from the image, so update it by hand. Merge the CI change first: the new hook answers the old CI's unsigned status polls with 401, while the new CI works against both the old and the new hook.
+
 ## Backups
 
 CLIProxyAPI deletes usage records once they're read, so `data/usage.db` is the only copy of your history. Back it up with:
@@ -165,6 +171,19 @@ npm run dev           # Vite on 127.0.0.1:5173, proxying /api to the server
 | `npm test` | Server tests, then frontend tests (happy-dom) in a separate Bun process |
 | `npm run db:generate` | Generate a migration after editing `server/src/db/schema.ts` |
 | `npm run backup` | Snapshot the database to `data/backups/` (see [Backups](#backups)) |
+
+### Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/) and are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
+1. In a PR, set `version` in `package.json` (`npm version --no-git-tag-version X.Y.Z`) and move the `Unreleased` notes in `CHANGELOG.md` into a `## [X.Y.Z] - YYYY-MM-DD` section.
+2. After it merges and CI on main has published the image, tag that commit and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m vX.Y.Z <merge-commit> && git push origin vX.Y.Z
+   ```
+
+CI checks that the tag matches `package.json` and has a CHANGELOG section. It then tags the image main published as `ghcr.io/allgemeiner-intellekt/cliproxy-dashboard:X.Y.Z` (and `:X.Y`), and creates the GitHub release from the CHANGELOG section.
 
 ### Importing earlier history
 
