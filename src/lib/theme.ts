@@ -7,8 +7,8 @@ export const THEME_STORAGE_KEY = 'cliproxy-theme'
 export const THEME_MEDIA_QUERY = '(prefers-color-scheme: dark)'
 
 export const THEME_COLOR: Record<ResolvedTheme, string> = {
-  dark: '#0a0a0a',
-  light: '#f8f8f8',
+  dark: '#0c0c0e',
+  light: '#ffffff',
 }
 
 export function isThemePreference(value: unknown): value is ThemePreference {

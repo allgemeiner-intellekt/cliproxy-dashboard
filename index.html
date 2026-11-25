@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <!-- ?v= busts browsers' favicon cache when the icon changes. -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=2" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=4" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4" />
     <!-- Home-screen app: iOS uses the touch icon; others use the manifest. -->
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -29,7 +29,7 @@
             : pref
         document.documentElement.dataset.theme = resolved
         var meta = document.querySelector('meta[name="theme-color"]')
-        if (meta) meta.setAttribute('content', resolved === 'light' ? '#f8f8f8' : '#0a0a0a')
+        if (meta) meta.setAttribute('content', resolved === 'light' ? '#ffffff' : '#0c0c0e')
       })()
     </script>
     <title>CLIProxy Usage</title>

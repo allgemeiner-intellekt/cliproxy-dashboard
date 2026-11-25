@@ -1,8 +1,9 @@
-// Usage: laid out like T3 Code's usage view (total, per-provider split, chart,
-// totals, breakdown), styled like the rest of this dashboard.
+// Usage: Editorial Calm layout (hero total, per-provider split, smooth gradient
+// chart, borderless totals + token composition bar, borderless breakdown).
 
 import { ChevronRight, LoaderCircle, Pencil, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ProviderMark } from '../components/ProviderMark'
 import { UsageChart, type ChartGroup } from '../components/UsageChart'
 import { PageHead, Segmented } from '../components/ui'
@@ -18,6 +19,7 @@ import {
   formatUsd,
   getUsage,
   nameDevice,
+  providerColor,
   providerLabel,
   type MachineUsage,
   type Range,
@@ -73,31 +75,37 @@ function Hero({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
   const share = (provider: ProviderUsage) =>
     byCost ? (t.costMicros ? provider.costMicros / t.costMicros : 0) : t.processedTokens ? provider.processedTokens / t.processedTokens : 0
 
+  const providers = [...summary.providers].sort((a, b) => {
+    const diff = byCost ? b.costMicros - a.costMicros : b.processedTokens - a.processedTokens
+    return diff || byProviderOrder(a.provider, b.provider)
+  })
+
   return (
     <div className="uhero">
       <div className="uhero-cost">{byCost ? formatUsd(t.costMicros) : formatTokens(t.processedTokens)}</div>
-      <div className="faint uhero-sub" title={byCost && unpriced > 0 ? 'Share of requests whose model has no known price; they count as $0.' : undefined}>
+      <div className="uhero-sub" title={byCost && unpriced > 0 ? 'Share of requests whose model has no known price; they count as $0.' : undefined}>
         {formatCount(t.sessions)} sessions
         {byCost && ' · API estimate'}
         {byCost && unpriced > 0 && ` · ${formatPercent(unpriced)} unpriced`}
       </div>
 
       <div className="utools">
-        {[...summary.providers]
-          .sort((a, b) => byProviderOrder(a.provider, b.provider))
-          .map((provider) => (
-            <div key={provider.provider} className="utool">
-              <div className="utool-line">
-                <ProviderMark of={provider.provider} />
-                <span className="utool-name">{providerLabel(provider.provider)}</span>
-                <span className="mono utool-cost">{byCost ? formatUsd(provider.costMicros) : formatTokens(provider.processedTokens)}</span>
-              </div>
-              <div className="faint utool-sub">
-                {formatCount(provider.sessions)} sessions · {formatPercent(share(provider))} of {byCost ? 'cost' : 'tokens'} ·{' '}
-                {byCost ? `${formatTokens(provider.processedTokens)} tokens` : formatUsd(provider.costMicros)}
-              </div>
+        {providers.map((provider) => (
+          <div key={provider.provider} className="utool">
+            <div className="utool-line">
+              <ProviderMark of={provider.provider} />
+              <span className="utool-name" style={{ color: providerColor(provider.provider) }}>
+                {providerLabel(provider.provider)}
+              </span>
+              <span className="utool-sess tabular">{formatCount(provider.sessions)} sessions</span>
+              <span className="utool-cost">{byCost ? formatUsd(provider.costMicros) : formatTokens(provider.processedTokens)}</span>
             </div>
-          ))}
+            <div className="utool-sub">
+              {formatPercent(share(provider))} of {byCost ? 'cost' : 'tokens'} ·{' '}
+              {byCost ? `${formatTokens(provider.processedTokens)} tokens` : formatUsd(provider.costMicros)}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -111,15 +119,49 @@ function TotalsRow({ totals }: { totals: Totals }) {
     ['Output', formatTokens(totals.outputTokens)],
     ['Cache savings', formatUsd(totals.cacheSavingsMicros)],
   ]
+  const totalInput = totals.cachedTokens + totals.uncachedTokens
+  const cacheHit = totalInput > 0 ? totals.cachedTokens / totalInput : 0
+  const mixTotal = totals.cachedTokens + totals.uncachedTokens + totals.outputTokens
+  const pct = (n: number) => (mixTotal > 0 ? (n / mixTotal) * 100 : 0)
+
   return (
-    <div className="panel utotals">
-      {tiles.map(([label, value]) => (
-        <div key={label} className="utotal">
-          <div className="eyebrow">{label}</div>
-          <div className="mono utotal-value">{value}</div>
+    <>
+      <div className="utotals">
+        {tiles.map(([label, value]) => (
+          <div key={label} className="utotal">
+            <div className="utotal-label">{label}</div>
+            <div className="utotal-value">{value}</div>
+          </div>
+        ))}
+      </div>
+      {mixTotal > 0 && (
+        <div className="umix">
+          <div className="umix-head">
+            <span className="umix-title">Token composition</span>
+            <span className="umix-note">{formatPercent(cacheHit)} cache hit rate</span>
+          </div>
+          <div className="umix-bar" aria-hidden>
+            {totals.cachedTokens > 0 && <div className="umix-seg umix-seg-cached" style={{ width: `${pct(totals.cachedTokens)}%` }} />}
+            {totals.uncachedTokens > 0 && <div className="umix-seg umix-seg-uncached" style={{ width: `${pct(totals.uncachedTokens)}%` }} />}
+            {totals.outputTokens > 0 && <div className="umix-seg umix-seg-output" style={{ width: `${pct(totals.outputTokens)}%` }} />}
+          </div>
+          <div className="umix-legend">
+            <span className="umix-legend-item">
+              <span className="umix-swatch umix-seg-cached" />
+              Cached read <strong>{formatTokens(totals.cachedTokens)}</strong>
+            </span>
+            <span className="umix-legend-item">
+              <span className="umix-swatch umix-seg-uncached" />
+              Uncached input <strong>{formatTokens(totals.uncachedTokens)}</strong>
+            </span>
+            <span className="umix-legend-item">
+              <span className="umix-swatch umix-seg-output" />
+              Output <strong>{formatTokens(totals.outputTokens)}</strong>
+            </span>
+          </div>
         </div>
-      ))}
-    </div>
+      )}
+    </>
   )
 }
 
@@ -132,9 +174,9 @@ function CostCells({ row, total, metric }: { row: Totals; total: number; metric:
   const unknown = isUnpriced(row)
   return (
     <>
-      <td className="mono num">{unknown ? <span className="faint">Unpriced</span> : formatUsd(row.costMicros)}</td>
-      <td className="mono num faint ushare">{unknown && metric === 'cost' ? '—' : formatPercent(shareOf(row, total, metric))}</td>
-      <td className="mono num utokens">{formatTokens(row.processedTokens)}</td>
+      <td className="num val-primary">{unknown ? <span className="faint">Unpriced</span> : formatUsd(row.costMicros)}</td>
+      <td className="num faint ushare">{unknown && metric === 'cost' ? '—' : formatPercent(shareOf(row, total, metric))}</td>
+      <td className="num faint utokens">{formatTokens(row.processedTokens)}</td>
     </>
   )
 }
@@ -142,7 +184,7 @@ function CostCells({ row, total, metric }: { row: Totals; total: number; metric:
 // Phones hide the Share and Tokens columns; this line under the name carries them.
 function RowMeta({ row, share }: { row: Totals; share: number }) {
   return (
-    <div className="umeta mono faint">
+    <div className="umeta tabular faint">
       {formatTokens(row.processedTokens)} tokens · {formatPercent(share)}
     </div>
   )
@@ -257,12 +299,12 @@ function MachineRows({ machine, total, metric, onChange }: { machine: MachineUsa
               <td>
                 <span className="ucell-name usub-name">
                   <ProviderMark of={m.provider} size={12} />
-                  <span className="mono">{m.model}</span>
+                  <span>{m.model}</span>
                 </span>
                 <RowMeta row={m} share={share} />
               </td>
-              <td className="mono num">{unknown ? <span className="faint">Unpriced</span> : formatUsd(m.costMicros)}</td>
-              <td className="mono num faint ushare" title="Share of this machine">
+              <td className="num val-primary">{unknown ? <span className="faint">Unpriced</span> : formatUsd(m.costMicros)}</td>
+              <td className="num faint ushare" title="Share of this machine">
                 {unknown && metric === 'cost' ? (
                   '—'
                 ) : (
@@ -274,7 +316,7 @@ function MachineRows({ machine, total, metric, onChange }: { machine: MachineUsa
                   </span>
                 )}
               </td>
-              <td className="mono num utokens">{formatTokens(m.processedTokens)}</td>
+              <td className="num faint utokens">{formatTokens(m.processedTokens)}</td>
             </tr>
           )
         })}
@@ -312,14 +354,14 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
             const tokens = providers.reduce((n, t) => n + (b.providers[t]?.tokens ?? 0), 0)
             return (
               <tr key={String(b.key)}>
-                <td className="mono">{bucketLabel(b.key, true, summary.timeZone)}</td>
+                <td className="val-primary">{bucketLabel(b.key, true, summary.timeZone)}</td>
                 {providers.map((t) => (
-                  <td key={t} className="mono num faint utoolcol">
+                  <td key={t} className="num faint utoolcol">
                     {!b.providers[t] ? '—' : metric === 'cost' ? formatUsd(b.providers[t].costMicros) : formatTokens(b.providers[t].tokens)}
                   </td>
                 ))}
-                <td className="mono num">{metric === 'cost' ? formatUsd(cost) : formatTokens(tokens)}</td>
-                <td className="mono num faint">{metric === 'cost' ? formatTokens(tokens) : formatUsd(cost)}</td>
+                <td className="num val-primary">{metric === 'cost' ? formatUsd(cost) : formatTokens(tokens)}</td>
+                <td className="num faint">{metric === 'cost' ? formatTokens(tokens) : formatUsd(cost)}</td>
               </tr>
             )
           })}
@@ -330,10 +372,12 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
   }
 
   const heading = { model: 'Model', machine: 'Machine', account: 'Account' }[kind]
+  const showRank = kind === 'model'
   return (
     <table className="utable">
       <thead>
         <tr>
+          {showRank && <th className="ucol-rank">#</th>}
           <th className="ucol-name">{heading}</th>
           <th className="num">Cost</th>
           <th className="num ushare">Share</th>
@@ -342,31 +386,41 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
       </thead>
       <tbody>
         {kind === 'model' &&
-          sort(summary.byModel).map((m) => (
-            <tr key={`${m.provider}:${m.model}`}>
-              <td>
-                <span className="ucell-name">
-                  <ProviderMark of={m.provider} />
-                  <span className="mono">{m.model}</span>
-                </span>
-                <RowMeta row={m} share={shareOf(m, total, metric)} />
-              </td>
-              <CostCells row={m} total={total} metric={metric} />
-            </tr>
-          ))}
+          sort(summary.byModel).map((m, idx) => {
+            const share = shareOf(m, total, metric)
+            const barWidth = Math.min(100, Math.max(share * 140, 3))
+            return (
+              <tr key={`${m.provider}:${m.model}`}>
+                <td className="ucol-rank">{idx + 1}</td>
+                <td>
+                  <div className="umodel-cell">
+                    <span className="ucell-name">
+                      <ProviderMark of={m.provider} />
+                      <span>{m.model}</span>
+                    </span>
+                    {share > 0 && (
+                      <div className="umodel-bar" style={{ width: `${barWidth}%`, background: providerColor(m.provider) }} aria-hidden />
+                    )}
+                  </div>
+                  <RowMeta row={m} share={share} />
+                </td>
+                <CostCells row={m} total={total} metric={metric} />
+              </tr>
+            )
+          })}
         {kind === 'machine' &&
           sort(summary.byMachine).map((m) => <MachineRows key={m.name} machine={m} total={total} metric={metric} onChange={onChange} />)}
         {kind === 'account' &&
           sort(summary.byAccount).map((a) => (
             <tr key={a.name}>
               <td>
-                {a.name}
+                <span className="val-primary">{a.name}</span>
                 <RowMeta row={a} share={shareOf(a, total, metric)} />
               </td>
               <CostCells row={a} total={total} metric={metric} />
             </tr>
           ))}
-        {summary.totals.records === 0 && <EmptyRow cols={4} />}
+        {summary.totals.records === 0 && <EmptyRow cols={showRank ? 5 : 4} />}
       </tbody>
     </table>
   )
@@ -414,7 +468,13 @@ function UsageSkeleton() {
   )
 }
 
-export function UsagePage({ refreshTick = 0 }: { refreshTick?: number } = {}) {
+export function UsagePage({
+  refreshTick = 0,
+  headerSlot = null,
+}: {
+  refreshTick?: number
+  headerSlot?: HTMLElement | null
+} = {}) {
   const [prefs, setPrefs] = usePrefs()
   const [displayPrefs] = useDisplayPrefs()
   const tz = resolveTimeZone(displayPrefs.timeZone)
@@ -458,43 +518,45 @@ export function UsagePage({ refreshTick = 0 }: { refreshTick?: number } = {}) {
   const stale = data !== null && data.range !== prefs.range
   const chartTitle = `${summary?.bucket === 'hour' ? 'Hourly' : 'Daily'} ${prefs.metric === 'cost' ? 'cost' : 'processed tokens'}`
 
+  const controls = (
+    <>
+      <span className="uloading" role="status">
+        {summary && busy && !stale && (
+          <>
+            <LoaderCircle size={14} className="spin" aria-hidden />
+            <span className="sr-only">Loading</span>
+          </>
+        )}
+      </span>
+      <Segmented className="range-seg" label="Time range" value={prefs.range} onChange={(range) => setPrefs({ range })} options={RANGE_OPTIONS} />
+      {/* Phones get a compact dropdown instead of five buttons. */}
+      <select
+        className="input range-select"
+        aria-label="Time range"
+        value={prefs.range}
+        onChange={(e) => setPrefs({ range: e.target.value as Range })}
+      >
+        {RANGE_OPTIONS.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <Segmented
+        label="Metric"
+        value={prefs.metric}
+        onChange={(metric) => setPrefs({ metric })}
+        options={[
+          ['cost', 'Cost'],
+          ['tokens', 'Tokens'],
+        ]}
+      />
+    </>
+  )
+
   return (
     <div className="page">
-      <PageHead title="Usage">
-        <Segmented
-          label="Metric"
-          value={prefs.metric}
-          onChange={(metric) => setPrefs({ metric })}
-          options={[
-            ['cost', 'Cost'],
-            ['tokens', 'Tokens'],
-          ]}
-        />
-        <Segmented className="range-seg" label="Time range" value={prefs.range} onChange={(range) => setPrefs({ range })} options={RANGE_OPTIONS} />
-        {/* Phones get a compact dropdown instead of five buttons. */}
-        <select
-          className="input range-select"
-          aria-label="Time range"
-          value={prefs.range}
-          onChange={(e) => setPrefs({ range: e.target.value as Range })}
-        >
-          {RANGE_OPTIONS.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-        {/* Any refresh, including polls and the one on returning to the tab;
-            a range switch has its own, more specific notice below. */}
-        <span className="uloading" role="status">
-          {summary && busy && !stale && (
-            <>
-              <LoaderCircle size={14} className="spin" aria-hidden />
-              <span className="sr-only">Loading</span>
-            </>
-          )}
-        </span>
-      </PageHead>
+      {headerSlot ? createPortal(controls, headerSlot) : <PageHead title="Usage">{controls}</PageHead>}
 
       {failed && (
         <div className="uerror" role="alert">
@@ -572,7 +634,7 @@ export function UsagePage({ refreshTick = 0 }: { refreshTick?: number } = {}) {
                 />
               </div>
             </div>
-            <div className="panel utable-wrap">
+            <div className="utable-wrap">
               <Breakdown summary={summary} kind={prefs.breakdown} metric={prefs.metric} onChange={refresh} />
             </div>
           </section>
