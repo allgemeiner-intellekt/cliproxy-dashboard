@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# PR runs replace each other. Main runs don't share a group; the publish and
-# deploy jobs queue instead, so no passing commit is dropped.
+# PR runs replace each other. Main runs don't share a group; the release job
+# queues instead, so no passing commit is dropped.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -68,8 +68,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Pushes the image from main once check passes. Only the tip of main is
-  # tagged :main, so a rerun of an older run can't roll the tag back.
+  # Pushes the image from main, tagged only by commit SHA, once check passes.
   publish:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -78,24 +77,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: publish-main
-      queue: max
     outputs:
-      latest: ${{ steps.tip.outputs.latest }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
-      - id: tip
-        name: Check this commit is the tip of main
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/main" --jq .sha)
-          if [ "$tip" = "$GITHUB_SHA" ]; then
-            echo latest=true >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::main is now at $tip, not $GITHUB_SHA. Pushing the SHA tag only."
-            echo latest=false >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
@@ -104,15 +88,14 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=main,enable=${{ steps.tip.outputs.latest == 'true' }}
-            type=sha,format=long,prefix=
+          tags: type=sha,format=long,prefix=
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
@@ -123,13 +106,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
+  # Points :main at the published digest and deploys it, one run at a time.
+  # The lock covers both, so a newer run can't retag :main while the hook is
+  # still pulling. Only the tip of main is promoted, so an older run or a
+  # rerun can't roll :main back.
+  release:
     needs: publish
-    if: needs.publish.outputs.latest == 'true' && vars.DEPLOY_HOOK_URL != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
     concurrency:
-      group: deploy
+      group: release-main
       queue: max
     steps:
       - id: tip
@@ -141,11 +130,25 @@ jobs:
           if [ "$tip" = "$GITHUB_SHA" ]; then
             echo latest=true >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::main is now at $tip, not $GITHUB_SHA. Skipping the deploy; the newer run deploys."
+            echo "::notice::main is now at $tip, not $GITHUB_SHA. Not promoting or deploying this commit."
             echo latest=false >> "$GITHUB_OUTPUT"
           fi
-      - name: Deploy
+      - if: steps.tip.outputs.latest == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: steps.tip.outputs.latest == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image as :main
         if: steps.tip.outputs.latest == 'true'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: docker buildx imagetools create --tag "$IMAGE:main" "$IMAGE@$DIGEST"
+      - name: Deploy
+        if: steps.tip.outputs.latest == 'true' && vars.DEPLOY_HOOK_URL != ''
         env:
           DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
           DEPLOY_HOOK_URL: ${{ vars.DEPLOY_HOOK_URL }}

@@ -1,14 +1,39 @@
 // Fails if the database built from server/drizzle/ differs from the one the
 // TypeScript schema describes (T6). drizzle-kit check/generate only compare
 // snapshot metadata, so a hand-edited migration or a schema change they can't
-// resolve non-interactively would otherwise pass.
+// resolve non-interactively would otherwise pass. It also checks the journal,
+// because the migrator skips any entry older than the last one it applied.
 //
 // Run with: bun scripts/check-migrations.ts
 import { Database } from 'bun:sqlite'
 import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator'
+import { readdirSync, readFileSync } from 'node:fs'
 
 const root = new URL('..', import.meta.url).pathname
+const migrationsFolder = `${root}server/drizzle`
+
+// The migrator applies an entry only if its `when` is newer than the last
+// applied one, so a timestamp that goes backwards is skipped on existing
+// databases while a fresh one (and the comparison below) still looks fine.
+const journal = JSON.parse(readFileSync(`${migrationsFolder}/meta/_journal.json`, 'utf8')) as {
+  entries: { idx: number; when: number; tag: string }[]
+}
+const journalErrors: string[] = []
+journal.entries.forEach((e, i) => {
+  if (e.idx !== i) journalErrors.push(`entry ${i} (${e.tag}) has idx ${e.idx}`)
+  const prev = journal.entries[i - 1]
+  if (prev && !(e.when > prev.when)) journalErrors.push(`${e.tag} has when=${e.when}, not later than ${prev.tag} (${prev.when})`)
+})
+const tags = new Set(journal.entries.map((e) => `${e.tag}.sql`))
+const files = readdirSync(migrationsFolder).filter((f) => f.endsWith('.sql'))
+for (const f of files) if (!tags.has(f)) journalErrors.push(`${f} is not in meta/_journal.json`)
+for (const t of tags) if (!files.includes(t)) journalErrors.push(`meta/_journal.json lists ${t}, which doesn't exist`)
+if (journalErrors.length > 0) {
+  console.error('server/drizzle/meta/_journal.json is inconsistent:')
+  for (const e of journalErrors) console.error(`  ${e}`)
+  process.exit(1)
+}
 
 const exported = Bun.spawnSync(['npx', 'drizzle-kit', 'export', '--sql'], { cwd: root, stderr: 'inherit' })
 if (exported.exitCode !== 0) {
@@ -19,9 +44,31 @@ const fromSchema = new Database(':memory:')
 fromSchema.exec(exported.stdout.toString())
 
 const fromMigrations = new Database(':memory:')
-migrate(drizzle(fromMigrations), { migrationsFolder: `${root}server/drizzle` })
+migrate(drizzle(fromMigrations), { migrationsFolder })
 
 type Row = Record<string, unknown>
+
+// Quoting, case and spacing differ between drizzle's output and hand-written
+// SQL, so compare clauses in a canonical form.
+const norm = (sql: string) =>
+  sql.toLowerCase().replace(/[`"[\]]/g, '').replace(/\s+/g, ' ').replace(/\s*([(),])\s*/g, '$1').trim()
+
+// Returns each `<keyword>(...)` clause in sql, with balanced parentheses.
+function clauses(sql: string, keyword: RegExp): string[] {
+  const found: string[] = []
+  for (const m of sql.matchAll(new RegExp(`${keyword.source}\\s*\\(`, 'gi'))) {
+    let depth = 0
+    const start = m.index + m[0].length - 1
+    for (let i = start; i < sql.length; i++) {
+      if (sql[i] === '(') depth++
+      else if (sql[i] === ')' && --depth === 0) {
+        found.push(norm(m[0].replace(/\s*\($/, '') + sql.slice(start, i + 1)))
+        break
+      }
+    }
+  }
+  return found.sort()
+}
 
 // A comparable description of every user table, view and trigger.
 function describe(db: Database) {
@@ -51,7 +98,10 @@ function describe(db: Database) {
           .map((c) => `${c.name ?? '<expr>'}${c.desc ? ' desc' : ''}${c.coll && c.coll !== 'BINARY' ? ` collate ${c.coll}` : ''}`)
         // Auto-index names depend on declaration order, so key those by shape.
         const auto = String(i.name).startsWith('sqlite_autoindex_')
-        return `${auto ? '(auto)' : i.name} unique=${i.unique} origin=${i.origin} partial=${i.partial} (${cols.join(', ')})`
+        // The CREATE INDEX text carries expressions and partial predicates.
+        const indexSql = String(objects.find((x) => x.type === 'index' && x.name === i.name)?.sql ?? '')
+        const tail = indexSql ? ` ${norm(indexSql.slice(indexSql.search(/\bON\b/i)))}` : ''
+        return `${auto ? '(auto)' : i.name} unique=${i.unique} origin=${i.origin} partial=${i.partial} (${cols.join(', ')})${tail}`
       })
       .sort()
     const foreignKeys = q('foreign_key_list')
@@ -61,6 +111,10 @@ function describe(db: Database) {
       columns,
       indexes,
       foreignKeys,
+      // The PRAGMAs above don't expose these clauses.
+      checks: clauses(sql, /\bCHECK/),
+      generated: clauses(sql, /\b(?:GENERATED\s+ALWAYS\s+)?AS/),
+      collations: [...sql.matchAll(/\bCOLLATE\s+(\w+)/gi)].map((m) => m[1].toLowerCase()).sort(),
       autoincrement: /\bAUTOINCREMENT\b/i.test(sql),
       withoutRowid: /\bWITHOUT\s+ROWID\b/i.test(sql),
       strict: /\)\s*STRICT\b/i.test(sql),
