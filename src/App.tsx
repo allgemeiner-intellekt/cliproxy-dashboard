@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { Logo } from './components/Logo'
+import { ThemeMenu } from './components/ThemeMenu'
 import { ErrorBoundary, Toaster } from './components/ui'
 import { getHealth, type Health } from './lib/usage'
 import { isAbort, usePoll } from './lib/usePoll'
@@ -64,7 +65,10 @@ function Shell() {
             <Logo size={20} />
             CLIProxy Usage
           </div>
-          <CollectorStatus />
+          <div className="header-actions">
+            <CollectorStatus />
+            <ThemeMenu />
+          </div>
         </div>
       </header>
       <main className="content">

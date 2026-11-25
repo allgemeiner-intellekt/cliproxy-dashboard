@@ -137,9 +137,18 @@
   }
 
   .btn,
+  .icon-btn,
   .range-select,
   .udev-input {
     height: 36px;
+  }
+
+  .icon-btn {
+    width: 36px;
+  }
+
+  .theme-menu-item {
+    min-height: 34px;
   }
 
   .uchevron {
