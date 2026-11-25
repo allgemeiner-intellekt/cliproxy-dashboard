@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { CircleAlert, RotateCw, X } from 'lucide-react'
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 
 export function PageHead({ title, sub, children }: { title: string; sub?: ReactNode; children?: ReactNode }) {
   return (
@@ -34,24 +35,83 @@ export function Segmented<T extends string>({
   )
 }
 
-// Minimal toast: one message at a time, auto-dismissed.
-let pushToast: (msg: string) => void = () => {}
-export const toast = (msg: string) => pushToast(msg)
+// Toasts stack, newest at the bottom. Info toasts go away on their own; errors
+// stay until dismissed, so there is time to read them.
+type ToastKind = 'info' | 'error'
+type ToastItem = { id: number; kind: ToastKind; msg: string }
+
+const INFO_TOAST_MS = 4000
+const MAX_TOASTS = 4
+
+let pushToast: (msg: string, kind: ToastKind) => void = () => {}
+export const toast = (msg: string, kind: ToastKind = 'error') => pushToast(msg, kind)
 
 export function Toaster() {
-  const [msg, setMsg] = useState<string | null>(null)
+  const [items, setItems] = useState<ToastItem[]>([])
+
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>
-    pushToast = (m) => {
-      setMsg(m)
-      clearTimeout(timer)
-      timer = setTimeout(() => setMsg(null), 3500)
+    let nextId = 0
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    pushToast = (msg, kind) => {
+      const id = ++nextId
+      // The same message again replaces the earlier copy instead of piling up.
+      setItems((prev) => [...prev.filter((t) => t.msg !== msg), { id, kind, msg }].slice(-MAX_TOASTS))
+      if (kind === 'info') {
+        const timer = setTimeout(() => {
+          timers.delete(timer)
+          setItems((prev) => prev.filter((t) => t.id !== id))
+        }, INFO_TOAST_MS)
+        timers.add(timer)
+      }
     }
-    return () => clearTimeout(timer)
+    return () => {
+      pushToast = () => {}
+      for (const timer of timers) clearTimeout(timer)
+    }
   }, [])
-  return msg ? (
-    <div className="toast" role="status">
-      {msg}
+
+  const dismiss = (id: number) => setItems((prev) => prev.filter((t) => t.id !== id))
+
+  return (
+    <div className="toasts">
+      {items.map((t) => (
+        <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
+          {t.kind === 'error' && <CircleAlert size={14} className="toast-icon" aria-hidden />}
+          <span className="toast-msg">{t.msg}</span>
+          <button className="toast-close" aria-label="Dismiss" onClick={() => dismiss(t.id)}>
+            <X size={14} />
+          </button>
+        </div>
+      ))}
     </div>
-  ) : null
+  )
+}
+
+// Last line of defense: a render error shows this instead of a blank page.
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Dashboard crashed', error, info.componentStack)
+  }
+
+  render() {
+    const { error } = this.state
+    if (!error) return this.props.children
+    return (
+      <div className="crash" role="alert">
+        <h1>Something went wrong</h1>
+        <p className="faint">The dashboard hit an unexpected error. Reloading usually fixes it.</p>
+        <pre className="mono crash-detail">{error.message || String(error)}</pre>
+        <button className="btn" onClick={() => window.location.reload()}>
+          <RotateCw size={14} />
+          Reload
+        </button>
+      </div>
+    )
+  }
 }

@@ -1,8 +1,8 @@
 // Usage: laid out like T3 Code's usage view (total, per-provider split, chart,
 // totals, breakdown), styled like the rest of this dashboard.
 
-import { ChevronRight, Pencil, RotateCcw } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { ChevronRight, LoaderCircle, Pencil, RotateCcw } from 'lucide-react'
+import { useCallback, useState } from 'react'
 import { ProviderMark } from '../components/ProviderMark'
 import { bucketLabel, UsageChart, type ChartGroup } from '../components/UsageChart'
 import { PageHead, Segmented, toast } from '../components/ui'
@@ -23,6 +23,7 @@ import {
   type Totals,
   type UsageSummary,
 } from '../lib/usage'
+import { isAbort, usePoll } from '../lib/usePoll'
 
 type Metric = 'cost' | 'tokens'
 type BreakdownKind = 'model' | 'day' | 'machine' | 'account'
@@ -297,7 +298,8 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
               </th>
             ))}
             <th className="num">Total</th>
-            <th className="num">Tokens</th>
+            {/* Total follows the metric; this column carries the other one. */}
+            <th className="num">{metric === 'cost' ? 'Tokens' : 'Cost'}</th>
           </tr>
         </thead>
         <tbody>
@@ -312,8 +314,8 @@ function Breakdown({ summary, kind, metric, onChange }: { summary: UsageSummary;
                     {!b.providers[t] ? '—' : metric === 'cost' ? formatUsd(b.providers[t].costMicros) : formatTokens(b.providers[t].tokens)}
                   </td>
                 ))}
-                <td className="mono num">{formatUsd(cost)}</td>
-                <td className="mono num">{formatTokens(tokens)}</td>
+                <td className="mono num">{metric === 'cost' ? formatUsd(cost) : formatTokens(tokens)}</td>
+                <td className="mono num faint">{metric === 'cost' ? formatTokens(tokens) : formatUsd(cost)}</td>
               </tr>
             )
           })}
@@ -378,27 +380,63 @@ function EmptyRow({ cols }: { cols: number }) {
 
 // --- Page ----------------------------------------------------------------------------
 
+// Placeholder shaped like the hero, chart and totals, shown until the first load.
+function UsageSkeleton() {
+  return (
+    <div className="uskeleton" aria-hidden>
+      <div className="utop">
+        <div>
+          <div className="skel skel-hero" />
+          <div className="skel skel-line" style={{ width: '60%' }} />
+          <div className="utools">
+            {[0, 1, 2].map((i) => (
+              <div key={i}>
+                <div className="skel skel-line" />
+                <div className="skel skel-line" style={{ width: '70%' }} />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="skel skel-line" style={{ width: '30%', marginBottom: 12 }} />
+          <div className="skel skel-chart" />
+        </div>
+      </div>
+      <section className="section">
+        <div className="skel skel-totals" />
+      </section>
+    </div>
+  )
+}
+
 export function UsagePage() {
   const [prefs, setPrefs] = usePrefs()
-  const [summary, setSummary] = useState<UsageSummary | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  // Results are kept with the range they were requested for, so a switch shows
+  // the old numbers as stale (not as the new range) until the new ones arrive.
+  const [data, setData] = useState<{ range: Range; summary: UsageSummary } | null>(null)
+  const [error, setError] = useState<{ range: Range; message: string } | null>(null)
 
-  const load = useCallback(async () => {
-    try {
-      setSummary(await getUsage(prefs.range))
-      setError(null)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }, [prefs.range])
+  const load = useCallback(
+    async (signal: AbortSignal) => {
+      const range = prefs.range
+      try {
+        const summary = await getUsage(range, signal)
+        if (signal.aborted) return
+        setData({ range, summary })
+        setError(null)
+      } catch (err) {
+        if (signal.aborted || isAbort(err)) return
+        setError({ range, message: (err as Error).message })
+      }
+    },
+    [prefs.range],
+  )
+  const refresh = usePoll(load, REFRESH_EVERY_MS)
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load()
-    const timer = setInterval(load, REFRESH_EVERY_MS)
-    return () => clearInterval(timer)
-  }, [load])
-
+  const summary = data?.summary ?? null
+  const failed = error?.range === prefs.range ? error.message : null
+  const stale = data !== null && data.range !== prefs.range
+  const loading = (data === null || stale) && !failed
   const chartTitle = `${summary?.bucket === 'hour' ? 'Hourly' : 'Daily'} ${prefs.metric === 'cost' ? 'cost' : 'processed tokens'}`
 
   return (
@@ -426,12 +464,36 @@ export function UsagePage() {
             </option>
           ))}
         </select>
+        <span className="uloading" role="status" aria-live="polite">
+          {stale && loading && (
+            <>
+              <LoaderCircle size={14} className="spin" aria-hidden />
+              <span className="sr-only">Loading</span>
+            </>
+          )}
+        </span>
       </PageHead>
 
-      {error && <p className="error-text">Usage server unreachable: {error}</p>}
+      {failed && (
+        <div className="uerror" role="alert">
+          <span className="error-text">Couldn’t load usage: {failed}</span>
+          <button
+            className="btn"
+            onClick={() => {
+              setError(null)
+              refresh()
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
-      {summary && (
-        <>
+      {!summary && !failed && <UsageSkeleton />}
+
+      {/* A failed switch hides the previous range's numbers rather than leave them up. */}
+      {summary && !(stale && failed) && (
+        <div className={stale ? 'ubody is-stale' : 'ubody'} aria-busy={loading}>
           <div className="utop">
             <Hero summary={summary} metric={prefs.metric} />
             <div>
@@ -475,10 +537,10 @@ export function UsagePage() {
               </div>
             </div>
             <div className="panel utable-wrap">
-              <Breakdown summary={summary} kind={prefs.breakdown} metric={prefs.metric} onChange={load} />
+              <Breakdown summary={summary} kind={prefs.breakdown} metric={prefs.metric} onChange={refresh} />
             </div>
           </section>
-        </>
+        </div>
       )}
     </div>
   )

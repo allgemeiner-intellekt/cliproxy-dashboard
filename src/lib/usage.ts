@@ -55,23 +55,34 @@ export type Health = {
 
 export type IdentityKind = 'key' | 'ip'
 
+const TIMEOUT_MS = 20e3
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+  // A hung server fails the request instead of leaving the page loading forever.
+  const timeout = AbortSignal.timeout(TIMEOUT_MS)
+  try {
+    const res = await fetch(`/api${path}`, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+      headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+    }
+    return (await res.json()) as T
+  } catch (err) {
+    if (timeout.aborted && !init?.signal?.aborted) throw new Error('Request timed out')
+    throw err
   }
-  return (await res.json()) as T
 }
 
 // The viewer's time zone, so days are local days.
 const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
-export const getHealth = () => api<Health>('/health')
-export const getUsage = (range: Range) => api<UsageSummary>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`)
+export const getHealth = (signal?: AbortSignal) => api<Health>('/health', { signal })
+export const getUsage = (range: Range, signal?: AbortSignal) =>
+  api<UsageSummary>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
 
 export const nameDevice = (kind: IdentityKind, value: string, name: string) =>
   api('/devices/name', { method: 'PUT', body: JSON.stringify({ kind, value, name }) })
