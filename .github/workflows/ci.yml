@@ -33,7 +33,7 @@ jobs:
       - run: npm run lint
       - run: npm run server:check
       - run: npm run build
-      - run: bun test
+      - run: npm test
       - name: Check migrations match the schema
         run: |
           npx drizzle-kit check

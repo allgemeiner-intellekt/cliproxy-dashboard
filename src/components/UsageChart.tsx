@@ -4,6 +4,7 @@
 // Fills use the dot-matrix pattern; strokes stay solid.
 
 import { useEffect, useRef, useState } from 'react'
+import { bucketLabel, chartKeyTarget, describeBucket, monotonePath, niceScale, weekdayLabel } from '../lib/chart'
 import { bucketDay, byProviderOrder, formatTokens, formatUsd, providerColor, providerLabel, type UsageSummary } from '../lib/usage'
 
 const HEIGHT = 224
@@ -12,7 +13,6 @@ const PAD_TOP = 8
 const PAD_BOTTOM = 8 // room for the "0" label below the baseline
 
 type Metric = 'cost' | 'tokens'
-type Point = [x: number, y: number]
 
 function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null)
@@ -26,56 +26,8 @@ function useWidth<T extends HTMLElement>() {
   return [ref, width] as const
 }
 
-// Step of 1, 2 or 5 × 10ⁿ giving about `ticks` intervals up to `max`.
-function niceScale(max: number, ticks: number) {
-  if (max <= 0) return { top: ticks, step: 1 }
-  const raw = max / ticks
-  const magnitude = 10 ** Math.floor(Math.log10(raw))
-  const step = [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= raw)!
-  return { top: Math.ceil(max / step) * step, step }
-}
-
-// Monotone cubic interpolation (Fritsch–Carlson) as an SVG path.
-function monotonePath(points: Point[]): string {
-  const n = points.length
-  if (n === 0) return ''
-  if (n === 1) return `M${points[0][0]},${points[0][1]}`
-  const dx = points.slice(1).map((p, i) => p[0] - points[i][0])
-  const slope = points.slice(1).map((p, i) => (p[1] - points[i][1]) / dx[i])
-  const tangent = points.map((_, i) => {
-    if (i === 0) return slope[0]
-    if (i === n - 1) return slope[n - 2]
-    // Flat at local extrema, so the curve never overshoots.
-    if (slope[i - 1] * slope[i] <= 0) return 0
-    return (3 * (dx[i - 1] + dx[i])) / ((2 * dx[i] + dx[i - 1]) / slope[i - 1] + (dx[i] + 2 * dx[i - 1]) / slope[i])
-  })
-  let d = `M${points[0][0]},${points[0][1]}`
-  for (let i = 0; i < n - 1; i++) {
-    const [x0, y0] = points[i]
-    const [x1, y1] = points[i + 1]
-    const h = dx[i] / 3
-    d += `C${x0 + h},${y0 + h * tangent[i]} ${x1 - h},${y1 - h * tangent[i + 1]} ${x1},${y1}`
-  }
-  return d
-}
-
-// Day keys are already local dates ("YYYY-MM-DD"), so format them as-is (UTC);
-// hour keys are instants, shown in local time.
-const dayKeyFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-const weekdayFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'UTC' })
-const hourFmt = new Intl.DateTimeFormat('en-US', { hour: 'numeric' })
-const hourLongFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' })
-
-export function bucketLabel(key: number | string, long = false) {
-  if (typeof key === 'string') return dayKeyFmt.format(new Date(`${key}T00:00:00Z`))
-  return (long ? hourLongFmt : hourFmt).format(key)
-}
-
-// Muted slate, sand, rose and sage. Machine areas overlap, so every pair must
-// stay distinguishable, including for color-blind viewers: each sits at a
-// different lightness, and the set passes the dataviz palette checks for all
-// pairs on the dark surface. Past four machines, the smallest fold into "Other".
-const MACHINE_COLORS = ['#5485c4', '#b58a3a', '#a65778', '#3e7232']
+// Machine colors (CSS --series-*). Past four machines, the smallest fold into "Other".
+const MACHINE_COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)']
 const OTHER_COLOR = 'var(--fg-3)'
 
 type Line = { id: string; label: string; color: string; values: number[] }
@@ -125,7 +77,13 @@ function dayStarts(summary: UsageSummary) {
 
 export function UsageChart({ summary, metric, by }: { summary: UsageSummary; metric: Metric; by: ChartGroup }) {
   const [ref, width] = useWidth<HTMLDivElement>()
-  const [hover, setHover] = useState<number | null>(null)
+  // The bucket under the pointer, and the one picked with the keyboard while
+  // the chart has focus (by key, so it stays on the same hour or day when a
+  // poll shifts the window). Whichever was used last drives the tooltip.
+  const [pointer, setPointer] = useState<number | null>(null)
+  const [pickedKey, setPickedKey] = useState<number | string | null>(null)
+  const [lastInput, setLastInput] = useState<'pointer' | 'keyboard'>('pointer')
+  const [dismissed, setDismissed] = useState(false) // Escape hid the tooltip
 
   const valueOf = (p?: { costMicros: number; tokens: number }) => (p ? (metric === 'cost' ? p.costMicros : p.tokens) : 0)
   const format = (v: number) => (metric === 'cost' ? formatUsd(v) : formatTokens(v))
@@ -147,11 +105,49 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const left = e.clientX - e.currentTarget.getBoundingClientRect().left - AXIS_W
     const i = Math.round((left / plotW) * (count - 1))
-    setHover(i >= 0 && i < count ? i : null)
+    setPointer(i >= 0 && i < count ? i : null)
+    setLastInput('pointer')
+    setDismissed(false)
   }
 
+  // For the keyboard the plot is a slider over the buckets: arrow keys step,
+  // Home and End jump to either end, and the value text reads the bucket out.
+  // (A slider, not a plain group, so screen readers in browse mode pass the
+  // arrow keys through.) Escape hides the tooltip and keeps the value.
+  const empty = count === 0 || summary.totals.records === 0
+  const pickedIndex = pickedKey === null ? -1 : summary.series.findIndex((b) => b.key === pickedKey)
+  // A picked bucket that has left the window falls back to the latest one.
+  const selected = empty ? null : pickedIndex >= 0 ? pickedIndex : count - 1
+  const pick = (i: number) => {
+    setPickedKey(summary.series[i].key)
+    setLastInput('keyboard')
+    setDismissed(false)
+  }
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (selected === null) return
+    if (e.key === 'Escape') {
+      if (hover !== null) {
+        e.preventDefault()
+        setDismissed(true)
+      }
+      return
+    }
+    const next = chartKeyTarget(e.key, selected, count)
+    if (next === undefined) return
+    e.preventDefault()
+    pick(next)
+  }
+
+  const chartLabel = `${metric === 'cost' ? 'Cost' : 'Tokens'} by ${summary.bucket === 'hour' ? 'hour' : 'day'}, by ${by}`
+
   const days = summary.range === '7d' ? dayStarts(summary) : []
-  const labels = count ? [0, Math.floor((count - 1) / 2), count - 1] : []
+  // First, middle and last; fewer when there are only one or two buckets.
+  const labels = [...new Set(count ? [0, Math.floor((count - 1) / 2), count - 1] : [])]
+  // The tooltip shows the input used last: the keyboard pick (set by keyboard
+  // focus or keys) or the pointer.
+  // When the pointer leaves, a keyboard pick on the focused chart shows again.
+  const keyboardHover = pickedKey !== null ? selected : null
+  const hover = dismissed ? null : lastInput === 'keyboard' ? keyboardHover : (pointer ?? keyboardHover)
   const hovered = hover === null ? null : summary.series[hover]
 
   return (
@@ -167,9 +163,34 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
           ))}
         </div>
       )}
-      <div className="uchart-plot" ref={ref}>
+      <div
+        className="uchart-plot"
+        ref={ref}
+        {...(selected === null
+          ? { role: 'img', 'aria-label': `${chartLabel}: no usage in this window` }
+          : {
+              tabIndex: 0,
+              role: 'slider',
+              'aria-label': chartLabel,
+              'aria-orientation': 'horizontal' as const,
+              'aria-valuemin': 1,
+              'aria-valuemax': count,
+              'aria-valuenow': selected + 1,
+              'aria-valuetext': describeBucket(bucketLabel(summary.series[selected].key, true), lines, selected, format),
+            })}
+        onKeyDown={onKeyDown}
+        onFocus={(e) => {
+          // Keyboard focus starts on the latest bucket. A mouse click only
+          // focuses; it doesn't pin a tooltip the user never asked for.
+          if (selected !== null && e.currentTarget.matches(':focus-visible')) pick(selected)
+        }}
+        onBlur={() => {
+          setPickedKey(null)
+          setDismissed(false)
+        }}
+      >
         {width > 0 && (
-          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setHover(null)} role="img" aria-label={`${metric === 'cost' ? 'Cost' : 'Tokens'} over time by ${by}`}>
+          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setPointer(null)} aria-hidden>
             <defs>
               {lines.map((l, i) => (
                 <pattern key={l.id} id={`dots-${by}-${i}`} width="3" height="3" patternUnits="userSpaceOnUse">
@@ -190,6 +211,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {painted.map((l) => (
               <path
                 key={`fill-${l.id}`}
+                className="useries"
                 d={`${monotonePath(l.values.map((v, i) => [x(i), y(v)]))}L${x(count - 1)},${y(0)}L${x(0)},${y(0)}Z`}
                 fill={`url(#dots-${by}-${lines.indexOf(l)})`}
               />
@@ -197,6 +219,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {painted.map((l) => (
               <path
                 key={`line-${l.id}`}
+                className="useries"
                 d={monotonePath(l.values.map((v, i) => [x(i), y(v)]))}
                 fill="none"
                 stroke={l.color}
@@ -213,7 +236,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
           </svg>
         )}
         {hovered && hover !== null && (
-          <div className="tooltip" style={{ left: Math.min(x(hover) + 12, width - 200) }}>
+          <div className="tooltip" aria-hidden style={{ left: Math.min(x(hover) + 12, width - 200) }}>
             <div className="tooltip-title">{bucketLabel(hovered.key, true)}</div>
             {lines.map((l) => (
               <div key={l.id} className="tooltip-row">
@@ -233,7 +256,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
         <div className="uchart-x uchart-x-days mono">
           {days.map((d, i) => (
             <span key={d.index} style={{ left: (x(d.index) + x(days[i + 1]?.index ?? count - 1)) / 2 }}>
-              {weekdayFmt.format(new Date(`${d.day}T00:00:00Z`))}
+              {weekdayLabel(d.day)}
             </span>
           ))}
         </div>

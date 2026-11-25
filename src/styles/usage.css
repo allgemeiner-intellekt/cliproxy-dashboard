@@ -3,7 +3,7 @@
 .utop {
   display: grid;
   grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
-  gap: 40px;
+  gap: var(--space-10);
 }
 
 .range-select {
@@ -16,29 +16,29 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 .seg-small button {
   height: 22px;
-  padding: 0 8px;
-  font-size: 11px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
 }
 
 .uchart-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 16px;
-  margin-bottom: 10px;
-  font-size: 12px;
+  gap: var(--space-1-5) var(--space-4);
+  margin-bottom: var(--space-2-5);
+  font-size: var(--text-sm);
   color: var(--fg-2);
 }
 
 .uchart-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .tooltip-label {
@@ -71,17 +71,27 @@
 .uerror {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
 }
 
-.ubody {
+.useries {
   transition: opacity 0.15s;
 }
 
-/* Shown while another range loads, so old numbers don't pass for new ones. */
-.ubody.is-stale {
-  opacity: 0.45;
+/* While another range loads, the notice says the numbers are the previous
+   range's. Only the chart's series fade; text keeps its contrast. */
+.ustale {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-5);
+  color: var(--fg-2);
+  font-size: var(--text-md);
+}
+
+.ubody.is-stale .useries {
+  opacity: 0.35;
 }
 
 .skel {
@@ -97,7 +107,7 @@
 
 .skel-line {
   height: 12px;
-  margin-top: 10px;
+  margin-top: var(--space-2-5);
 }
 
 .skel-chart {
@@ -115,19 +125,13 @@
   }
 }
 
+/* Reduced motion (the rest is global, in app.css): this rule outranks the
+   generic .spin one, so it needs its own slow speed. */
 @media (prefers-reduced-motion: reduce) {
-  .skel {
-    animation: none;
-  }
-
   .uloading .spin {
     animation:
       reveal 0s 0.3s both,
       spin 2.4s linear infinite;
-  }
-
-  .ubody {
-    transition: none;
   }
 }
 
@@ -135,7 +139,7 @@
 
 .uhero-cost {
   color: var(--fg);
-  font-size: 40px;
+  font-size: var(--text-hero);
   font-weight: 500;
   letter-spacing: -0.02em;
   line-height: 1.1;
@@ -143,21 +147,21 @@
 }
 
 .uhero-sub {
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: var(--space-1-5);
+  font-size: var(--text-sm);
 }
 
 .utools {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-top: 28px;
+  gap: var(--space-4);
+  margin-top: var(--space-7);
 }
 
 .utool-line {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .utool-name {
@@ -168,18 +172,24 @@
 .utool-cost {
   margin-left: auto;
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .utool-sub {
   margin: 3px 0 0 22px; /* aligned with the name, past the logo */
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* Chart */
 
 .uchart-plot {
   position: relative;
+  border-radius: var(--radius);
+}
+
+.uchart-plot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .uchart-plot svg {
@@ -189,8 +199,8 @@
 .uchart-x {
   display: flex;
   justify-content: space-between;
-  padding: 8px 0 0 64px;
-  font-size: 11px;
+  padding: var(--space-2) 0 0 var(--space-16);
+  font-size: var(--text-xs);
   text-transform: uppercase;
   color: var(--fg-3);
 }
@@ -221,7 +231,7 @@
 }
 
 .utotal {
-  padding: 14px 16px;
+  padding: var(--space-3-5) var(--space-4);
 }
 
 .utotal + .utotal {
@@ -229,9 +239,9 @@
 }
 
 .utotal-value {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 /* Breakdown table */
@@ -243,14 +253,14 @@
 .utable {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .utable th {
-  padding: 10px;
+  padding: var(--space-2-5);
   border-bottom: 1px solid var(--line);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   letter-spacing: 0.06em;
   text-align: left;
@@ -260,19 +270,19 @@
 }
 
 .utable td {
-  padding: 9px 10px;
+  padding: 9px var(--space-2-5);
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
 
 .utable th:first-child,
 .utable td:first-child {
-  padding-left: 16px;
+  padding-left: var(--space-4);
 }
 
 .utable th:last-child,
 .utable td:last-child {
-  padding-right: 16px;
+  padding-right: var(--space-4);
 }
 
 .utable tbody tr:last-child td {
@@ -288,7 +298,7 @@
 }
 
 .utable td.mono {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .ucol-name {
@@ -298,7 +308,7 @@
 .ucell-name {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .umeta {
@@ -308,7 +318,7 @@
 .uchevron {
   display: inline-flex;
   margin-left: -4px;
-  padding: 2px;
+  padding: var(--space-0-5);
   border: none;
   background: none;
   color: var(--fg-3);
@@ -353,7 +363,7 @@
 .usub-share {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .usub-bar {
@@ -372,7 +382,7 @@
 }
 
 .ucell-name .mono {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* Machine names: click to rename */
@@ -380,13 +390,13 @@
 .udev {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .udev-name {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0;
   border: none;
   background: none;
@@ -404,7 +414,7 @@
 
 .udev-reset {
   display: inline-flex;
-  padding: 2px;
+  padding: var(--space-0-5);
   border: none;
   background: none;
 }
@@ -428,7 +438,7 @@
 .tick {
   fill: var(--fg-3);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -436,30 +446,30 @@
   position: absolute;
   top: 0;
   width: 190px;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: var(--text-sm);
   pointer-events: none;
 }
 
 .tooltip-title {
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1-5);
   color: var(--fg-3);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 .tooltip-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-2);
 }
 
 .tooltip-row + .tooltip-row {
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 
 .tooltip-row strong {
@@ -477,7 +487,7 @@
 }
 
 .tooltip-total {
-  margin-top: 6px !important;
-  padding-top: 6px;
+  margin-top: var(--space-1-5) !important;
+  padding-top: var(--space-1-5);
   border-top: 1px solid var(--line);
 }

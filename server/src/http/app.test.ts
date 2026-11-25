@@ -166,3 +166,65 @@ describe('import timestamps (D5)', () => {
     expect(await res.json()).toMatchObject({ imported: 0, invalidTimestamp: 2 })
   })
 })
+
+describe('routes', () => {
+  const get = (a: Hono, path: string) => a.request(path, { headers: { host: 'localhost' } })
+
+  test('/api/health reports collector, prices and tailnet state', async () => {
+    const res = await get(app().app, '/api/health')
+    expect(await res.json()).toEqual({ collector: { connected: true }, pricesLoadedAt: null, tailnet: { syncedAt: null, error: null } })
+  })
+
+  test('/api/usage validates the range and defaults to 30 days', async () => {
+    const { app: a } = app()
+    expect((await get(a, '/api/usage?range=1y')).status).toBe(400)
+    const body = (await (await get(a, '/api/usage')).json()) as { series: unknown[]; totals: { records: number } }
+    // Without ?tz the server's own zone applies; zone handling is tested below.
+    expect(body).toMatchObject({ range: '30d', bucket: 'day' })
+    expect(body.series).toHaveLength(30)
+  })
+
+  test('/api/usage uses a valid IANA zone and falls back to UTC otherwise', async () => {
+    const { app: a } = app()
+    expect(await (await get(a, '/api/usage?range=7d&tz=Asia/Shanghai')).json()).toMatchObject({ timeZone: 'Asia/Shanghai', bucket: 'hour' })
+    expect(await (await get(a, '/api/usage?tz=Not/AZone')).json()).toMatchObject({ timeZone: 'UTC' })
+  })
+
+  test('/api/usage counts imported history', async () => {
+    const { app: a } = app()
+    const recent = new Date(Date.now() - 3600e3).toISOString()
+    const yesterday = new Date(Date.now() - 2 * 3600e3).toISOString()
+    // Imports stop at the first live record; with none, anything before now counts.
+    await a.request('/api/import', json('POST', { files: [{ tool: 'claude-code', lines: [claudeLine(recent, 'u1'), claudeLine(yesterday, 'u2')] }] }))
+    const body = (await (await get(a, '/api/usage?range=24h')).json()) as { series: unknown[]; totals: { records: number } }
+    expect(body.totals.records).toBe(2)
+  })
+
+  test('/api/import attributes history to the forwarded client', async () => {
+    const { app: a, db } = app()
+    const files = [{ tool: 'claude-code', lines: [claudeLine('2025-06-01T00:00:00Z', 'fwd')] }]
+    const res = await a.request('/api/import', json('POST', { files }, { 'x-forwarded-for': '100.64.0.5, 10.0.0.1' }))
+    expect(await res.json()).toMatchObject({ machineIp: '100.64.0.5', imported: 1 })
+    expect(db.select().from(requests).all().map((r) => r.clientIp)).toEqual(['100.64.0.5'])
+    const direct = await app().app.request('/api/import', json('POST', { files: [] }))
+    expect(await direct.json()).toMatchObject({ machineIp: '127.0.0.1' })
+  })
+
+  test('/api/devices name and clear round trip', async () => {
+    const { app: a } = app()
+    expect((await a.request('/api/devices/name', json('PUT', { kind: 'ip', value: '10.0.0.9', name: '  nas  ' }))).status).toBe(200)
+    let devices = await (await get(a, '/api/devices')).json()
+    expect(devices).toEqual([expect.objectContaining({ kind: 'ip', value: '10.0.0.9', name: 'nas', nameSource: 'custom' })])
+
+    expect((await a.request('/api/devices/name', json('DELETE', { kind: 'ip', value: '10.0.0.9' }))).status).toBe(200)
+    devices = await (await get(a, '/api/devices')).json()
+    expect(devices).toEqual([])
+  })
+
+  test('/api/devices/name rejects bad kinds and blank names', async () => {
+    const { app: a } = app()
+    expect((await a.request('/api/devices/name', json('PUT', { kind: 'mac', value: 'x', name: 'y' }))).status).toBe(400)
+    expect((await a.request('/api/devices/name', json('PUT', { kind: 'ip', value: 'x', name: '   ' }))).status).toBe(400)
+    expect((await a.request('/api/devices/name', json('DELETE', { kind: 'ip' }))).status).toBe(400)
+  })
+})
