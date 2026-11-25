@@ -296,6 +296,7 @@ const PROVIDERS: Record<string, { label: string; color: string }> = {
   meta: { label: 'Meta', color: 'var(--meta)' },
   xai: { label: 'xAI', color: 'var(--xai)' },
   gemini: { label: 'Google', color: 'var(--gemini)' },
+  kimi: { label: 'Kimi', color: 'var(--kimi)' },
   unknown: { label: 'Unknown', color: 'var(--fg-3)' },
 }
 const PROVIDER_ORDER = Object.keys(PROVIDERS)

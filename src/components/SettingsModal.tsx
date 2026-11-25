@@ -92,7 +92,7 @@ function ConnectionPane({
                   : `Disconnected since ${formatDateTime(collector.downSince)}`}
               </div>
             </div>
-            <span className="mono group-val group-status">
+            <span className="tabular group-val group-status">
               <span className={dotClass} />
               {stateLabel}
             </span>
@@ -111,7 +111,7 @@ function ConnectionPane({
               <div className="group-label">Management Key</div>
               <div className="group-desc">Used server-side only to authenticate subscription</div>
             </div>
-            <span className="mono group-val">{collector.keyConfigured ? 'Configured (env)' : 'Not set'}</span>
+            <span className="group-val">{collector.keyConfigured ? 'Configured (env)' : 'Not set'}</span>
           </div>
 
           <div className="group-row">
@@ -119,7 +119,7 @@ function ConnectionPane({
               <div className="group-label">Collected This Run</div>
               <div className="group-desc">Last record received {formatRelative(collector.lastRecordAt)}</div>
             </div>
-            <span className="mono group-val">{formatCount(collector.stored)} requests</span>
+            <span className="tabular group-val">{formatCount(collector.stored)} requests</span>
           </div>
         </div>
 
@@ -175,7 +175,7 @@ function PricingRow({ row }: { row: UsedModelPricing }) {
               <span style={{ width: 14, display: 'inline-block' }} />
             )}
             <ProviderMark of={row.provider} />
-            <span className="mono">{row.model}</span>
+            <span>{row.model}</span>
             {hasTiers && <span className="tag tag-accent">&gt;{Math.round(tiers[0].aboveTokens / 1000)}k</span>}
           </span>
         </td>
@@ -196,26 +196,26 @@ function PricingRow({ row }: { row: UsedModelPricing }) {
               {row.pricedAs}
             </span>
           ) : (
-            <span className="mono faint">{row.pricedAs}</span>
+            <span className="faint">{row.pricedAs}</span>
           )}
         </td>
-        <td className="mono num">{formatRateMicros(row.rates?.input)}</td>
-        <td className="mono num">{formatRateMicros(row.rates?.output)}</td>
-        <td className="mono num faint">{formatRateMicros(row.rates?.cacheRead)}</td>
-        <td className="mono num faint">{formatRateMicros(row.rates?.cacheWrite)}</td>
+        <td className="num val-primary">{formatRateMicros(row.rates?.input)}</td>
+        <td className="num val-primary">{formatRateMicros(row.rates?.output)}</td>
+        <td className="num faint">{formatRateMicros(row.rates?.cacheRead)}</td>
+        <td className="num faint">{formatRateMicros(row.rates?.cacheWrite)}</td>
       </tr>
       {hasTiers &&
         open &&
         tiers.map((tier) => (
           <tr key={tier.aboveTokens} className="tier-row">
             <td>
-              <span className="mono">Prompt &gt; {Math.round(tier.aboveTokens / 1000)}k tokens</span>
+              <span>Prompt &gt; {Math.round(tier.aboveTokens / 1000)}k tokens</span>
             </td>
             <td className="faint">Long-context tier</td>
-            <td className="mono num">{formatRateMicros(tier.rates.input)}</td>
-            <td className="mono num">{formatRateMicros(tier.rates.output)}</td>
-            <td className="mono num">{formatRateMicros(tier.rates.cacheRead)}</td>
-            <td className="mono num">{formatRateMicros(tier.rates.cacheWrite)}</td>
+            <td className="num">{formatRateMicros(tier.rates.input)}</td>
+            <td className="num">{formatRateMicros(tier.rates.output)}</td>
+            <td className="num">{formatRateMicros(tier.rates.cacheRead)}</td>
+            <td className="num">{formatRateMicros(tier.rates.cacheWrite)}</td>
           </tr>
         ))}
     </Fragment>
@@ -377,7 +377,7 @@ function StoragePane({ system }: { system: SystemInfo }) {
             {storage.earliestAt ? `${formatDate(storage.earliestAt)} – ${formatDate(storage.latestAt)}` : 'No requests stored'}
           </div>
         </div>
-        <span className="mono group-val">
+        <span className="tabular group-val">
           {formatCount(storage.totalRequests)}
           {storage.unpricedRequests > 0 ? ` (${formatCount(storage.unpricedRequests)} unpriced)` : ''}
         </span>

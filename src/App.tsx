@@ -46,7 +46,7 @@ function CollectorStatus({
     return (
       <button
         type="button"
-        className="status-pill-btn mono"
+        className="status-pill-btn"
         title="Cannot reach usage server"
         onClick={onOpenConnection}
       >
@@ -65,7 +65,7 @@ function CollectorStatus({
   return (
     <button
       type="button"
-      className="status-pill-btn mono"
+      className="status-pill-btn"
       title={connected ? 'Subscribed to CLIProxyAPI usage stream' : (lastError ?? 'Collector disconnected')}
       onClick={onOpenConnection}
     >
@@ -88,6 +88,7 @@ function Shell() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsPane, setSettingsPane] = useState<SettingsPane>('connection')
   const [refreshTick, setRefreshTick] = useState(0)
+  const [headerSlot, setHeaderSlot] = useState<HTMLDivElement | null>(null)
 
   const openSettings = useCallback((pane: SettingsPane) => {
     setSettingsPane(pane)
@@ -100,16 +101,22 @@ function Shell() {
     <div className="shell">
       <header className="header">
         <div className="header-inner">
-          <div className="brand">
-            <Logo size={20} />
-            CLIProxy Usage
-          </div>
-          <div className="header-actions">
+          <div className="header-left">
+            <div className="brand">
+              <Logo size={18} />
+              CLIProxy Usage
+            </div>
+            <span className="header-sep" aria-hidden>
+              /
+            </span>
             <CollectorStatus
               everyMs={pollIntervalMs(prefs.pollInterval)}
               refreshTick={refreshTick}
               onOpenConnection={() => openSettings('connection')}
             />
+          </div>
+          <div className="header-actions">
+            <div ref={setHeaderSlot} className="header-controls" />
             <button
               type="button"
               className="icon-btn"
@@ -125,7 +132,7 @@ function Shell() {
         </div>
       </header>
       <main className="content">
-        <UsagePage refreshTick={refreshTick} />
+        <UsagePage refreshTick={refreshTick} headerSlot={headerSlot} />
       </main>
       <SettingsModal
         open={settingsOpen}

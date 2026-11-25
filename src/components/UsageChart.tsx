@@ -193,9 +193,10 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
           <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setPointer(null)} aria-hidden>
             <defs>
               {lines.map((l, i) => (
-                <pattern key={l.id} id={`dots-${by}-${i}`} width="3" height="3" patternUnits="userSpaceOnUse">
-                  <circle cx="1.5" cy="1.5" r="0.45" fill={l.color} opacity="0.55" />
-                </pattern>
+                <linearGradient key={l.id} id={`area-${by}-${i}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={l.color} stopOpacity="var(--chart-fill-opacity)" />
+                  <stop offset="100%" stopColor={l.color} stopOpacity="0" />
+                </linearGradient>
               ))}
             </defs>
 
@@ -213,7 +214,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
                 key={`fill-${l.id}`}
                 className="useries"
                 d={`${monotonePath(l.values.map((v, i) => [x(i), y(v)]))}L${x(count - 1)},${y(0)}L${x(0)},${y(0)}Z`}
-                fill={`url(#dots-${by}-${lines.indexOf(l)})`}
+                fill={`url(#area-${by}-${lines.indexOf(l)})`}
               />
             ))}
             {painted.map((l) => (
@@ -223,8 +224,9 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
                 d={monotonePath(l.values.map((v, i) => [x(i), y(v)]))}
                 fill="none"
                 stroke={l.color}
-                strokeWidth={1.5}
+                strokeWidth={1.75}
                 strokeLinejoin="round"
+                strokeLinecap="round"
               />
             ))}
 
@@ -232,7 +234,23 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
               <line key={d.index} className="grid" x1={x(d.index)} x2={x(d.index)} y1={PAD_TOP} y2={y(0)} />
             ))}
 
-            {hover !== null && <line className="crosshair" x1={x(hover)} x2={x(hover)} y1={PAD_TOP} y2={y(0)} />}
+            {hover !== null && (
+              <>
+                <line className="crosshair" x1={x(hover)} x2={x(hover)} y1={PAD_TOP} y2={y(0)} />
+                {painted.map((l) => (
+                  <circle
+                    key={`dot-${l.id}`}
+                    cx={x(hover)}
+                    cy={y(l.values[hover])}
+                    r={3.25}
+                    fill={l.color}
+                    stroke="var(--bg)"
+                    strokeWidth={1.5}
+                    pointerEvents="none"
+                  />
+                ))}
+              </>
+            )}
           </svg>
         )}
         {hovered && hover !== null && (
@@ -253,7 +271,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
         )}
       </div>
       {days.length ? (
-        <div className="uchart-x uchart-x-days mono">
+        <div className="uchart-x uchart-x-days">
           {days.map((d, i) => (
             <span key={d.index} style={{ left: (x(d.index) + x(days[i + 1]?.index ?? count - 1)) / 2 }}>
               {weekdayLabel(d.day)}
@@ -261,7 +279,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
           ))}
         </div>
       ) : (
-        <div className="uchart-x mono">
+        <div className="uchart-x">
           {labels.map((i) => (
             <span key={i}>{bucketLabel(summary.series[i].key, false, summary.timeZone)}</span>
           ))}

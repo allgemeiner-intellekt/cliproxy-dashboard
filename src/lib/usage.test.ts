@@ -59,9 +59,11 @@ describe('providers', () => {
 
   test('labels and colors fall back for unknown providers', () => {
     expect(providerLabel('openai')).toBe('OpenAI')
-    expect(providerLabel('kimi')).toBe('kimi')
+    expect(providerLabel('kimi')).toBe('Kimi')
+    expect(providerLabel('acme')).toBe('acme')
     expect(providerColor('gemini')).toBe('var(--gemini)')
-    expect(providerColor('kimi')).toBe('var(--fg-3)')
+    expect(providerColor('kimi')).toBe('var(--kimi)')
+    expect(providerColor('acme')).toBe('var(--fg-3)')
   })
 })
 

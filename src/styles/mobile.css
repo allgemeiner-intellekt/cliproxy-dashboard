@@ -15,7 +15,19 @@
   }
 
   .header-inner {
-    padding: 0 var(--space-4);
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .header-controls {
+    margin-right: auto;
   }
 
   .toasts {
@@ -72,18 +84,7 @@
 
   .utotals {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .utotal + .utotal {
-    border-left: none;
-  }
-
-  .utotal:nth-child(even) {
-    border-left: 1px solid var(--line);
-  }
-
-  .utotal:nth-child(n + 3) {
-    border-top: 1px solid var(--line);
+    gap: var(--space-4) var(--space-5);
   }
 
   .ucol-name {
