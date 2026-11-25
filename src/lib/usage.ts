@@ -48,6 +48,7 @@ export type Health = {
     lastRecordAt: number | null
     stored: number
     lastError: string | null
+    downSince: number | null
   }
   pricesLoadedAt: number | null
   tailnet: { syncedAt: number | null; error: string | null }
@@ -57,7 +58,8 @@ export type IdentityKind = 'key' | 'ip'
 
 const TIMEOUT_MS = 20e3
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, options?: RequestInit & { okStatuses?: number[] }): Promise<T> {
+  const { okStatuses, ...init } = options ?? {}
   // One controller for both the caller's cancellation and our timeout, so a hung
   // server fails the request instead of leaving the page loading forever.
   // (Not AbortSignal.any/timeout: too new for some supported Safari versions.)
@@ -77,7 +79,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       signal: controller.signal,
       headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     })
-    if (!res.ok) {
+    if (!res.ok && !okStatuses?.includes(res.status)) {
       const body = await res.json().catch(() => ({}))
       throw new Error((body as { error?: string } | null)?.error ?? `HTTP ${res.status}`)
     }
@@ -145,7 +147,20 @@ export function isUsageSummary(v: unknown): v is UsageSummary {
 // The viewer's time zone, so days are local days.
 const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
-export const getHealth = (signal?: AbortSignal) => api<Health>('/health', { signal })
+// Checks the fields the status pill renders.
+const isHealth = (v: unknown): v is Health =>
+  isObject(v) &&
+  isObject(v.collector) &&
+  typeof v.collector.connected === 'boolean' &&
+  (v.collector.lastError === null || v.collector.lastError === undefined || isString(v.collector.lastError))
+
+// 503 means the collector is down; the body still describes it. Anything else
+// (e.g. a proxy's own 503) counts as the server being unreachable.
+export async function getHealth(signal?: AbortSignal): Promise<Health> {
+  const health = await api<unknown>('/health', { signal, okStatuses: [503] })
+  if (!isHealth(health)) throw new Error('Unexpected response from the usage server')
+  return health
+}
 export async function getUsage(range: Range, signal?: AbortSignal): Promise<UsageSummary> {
   const summary = await api<unknown>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
   if (!isUsageSummary(summary)) throw new Error('Unexpected response from the usage server')
