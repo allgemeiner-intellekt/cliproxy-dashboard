@@ -1,7 +1,7 @@
 // HTTP API for the usage dashboard and external consumers.
 
 import { Hono } from 'hono'
-import type { CliproxyCollector } from '../collector/cliproxy'
+import type { CliproxyCollector, CollectorStatus } from '../collector/cliproxy'
 import type { Db } from '../db/client'
 import { importTranscripts, type TranscriptFile } from '../import/importer'
 import { clearIdentityName, listDevices, nameIdentity, type IdentityKind } from '../machines'
@@ -9,17 +9,28 @@ import type { Tailnet } from '../tailnet'
 import type { PriceBook } from '../usage/pricing'
 import { RANGES, usageSummary, type Range } from '../usage/summary'
 
+// Longer than a few reconnect attempts (backoff tops out at 30 s).
+export const COLLECTOR_DOWN_MS = 120e3
+
+export const collectorDown = (status: CollectorStatus, now = Date.now()) =>
+  !status.connected && status.downSince !== null && now - status.downSince > COLLECTOR_DOWN_MS
+
 const isKind = (k: unknown): k is IdentityKind => k === 'key' || k === 'ip'
 
 export function createApp(db: Db, collector: CliproxyCollector, prices: PriceBook, tailnet: Tailnet) {
   const app = new Hono().basePath('/api')
 
+  // 503 once the collector has been down for a while, so the container
+  // healthcheck (and any monitor) notices that usage is no longer recorded.
   app.get('/health', (c) =>
-    c.json({
-      collector: collector.status,
-      pricesLoadedAt: prices.loadedAt,
-      tailnet: { syncedAt: tailnet.syncedAt, error: tailnet.lastError },
-    }),
+    c.json(
+      {
+        collector: collector.status,
+        pricesLoadedAt: prices.loadedAt,
+        tailnet: { syncedAt: tailnet.syncedAt, error: tailnet.lastError },
+      },
+      collectorDown(collector.status) ? 503 : 200,
+    ),
   )
 
   // ?range=24h|7d|30d|90d|all&tz=<IANA time zone> (days are the viewer's local days).

@@ -55,6 +55,9 @@ class AuthError extends Error {
 export type CollectorStatus = {
   connected: boolean
   since: number | null
+  // When the collector last lost (or, at startup, had not yet made) its
+  // subscription; null while connected.
+  downSince: number | null
   lastRecordAt: number | null
   stored: number
   lastError: string | null
@@ -72,7 +75,7 @@ type Options = {
 }
 
 export class CliproxyCollector {
-  status: CollectorStatus = { connected: false, since: null, lastRecordAt: null, stored: 0, lastError: null }
+  status: CollectorStatus = { connected: false, since: null, downSince: Date.now(), lastRecordAt: null, stored: 0, lastError: null }
   private backoffMs: number
   private stopped = false
   private activeSub?: RespConnection
@@ -135,7 +138,7 @@ export class CliproxyCollector {
         this.options.pingTimeoutMs ?? PING_TIMEOUT_MS,
       )
 
-      this.status = { ...this.status, connected: true, since: Date.now(), lastError: null }
+      this.status = { ...this.status, connected: true, since: Date.now(), downSince: null, lastError: null }
       console.log('[collector] subscribed to CLIProxyAPI usage')
 
       await this.drainQueue(() => subClosed || this.stopped)
@@ -150,6 +153,7 @@ export class CliproxyCollector {
       this.activeDrain = undefined
       sub.close()
       if (this.activeSub === sub) this.activeSub = undefined
+      if (this.status.connected) this.status.downSince = Date.now()
       this.status.connected = false
     }
 
