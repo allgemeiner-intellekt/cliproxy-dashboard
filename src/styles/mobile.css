@@ -17,6 +17,11 @@
     padding: 0 16px;
   }
 
+  .toasts {
+    right: 16px;
+    bottom: 16px;
+  }
+
   /* Pages */
   .page {
     padding: 20px 16px 64px;

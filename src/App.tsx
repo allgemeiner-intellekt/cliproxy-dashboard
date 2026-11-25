@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Logo } from './components/Logo'
-import { Toaster } from './components/ui'
+import { ErrorBoundary, Toaster } from './components/ui'
 import { getHealth, type Health } from './lib/usage'
+import { isAbort, usePoll } from './lib/usePoll'
 import { UsagePage } from './pages/UsagePage'
 
 const HEALTH_EVERY_MS = 30e3
@@ -10,26 +11,18 @@ function CollectorStatus() {
   const [health, setHealth] = useState<Health | null>(null)
   const [unreachable, setUnreachable] = useState(false)
 
-  useEffect(() => {
-    let alive = true
-    const check = async () => {
-      try {
-        const next = await getHealth()
-        if (!alive) return
-        setHealth(next)
-        setUnreachable(false)
-      } catch {
-        if (!alive) return
-        setUnreachable(true)
-      }
-    }
-    void check()
-    const timer = setInterval(check, HEALTH_EVERY_MS)
-    return () => {
-      alive = false
-      clearInterval(timer)
+  const check = useCallback(async (signal: AbortSignal) => {
+    try {
+      const next = await getHealth(signal)
+      if (signal.aborted) return
+      setHealth(next)
+      setUnreachable(false)
+    } catch (err) {
+      if (signal.aborted || isAbort(err)) return
+      setUnreachable(true)
     }
   }, [])
+  usePoll(check, HEALTH_EVERY_MS)
 
   if (unreachable) {
     return (
@@ -55,6 +48,14 @@ function CollectorStatus() {
 }
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <Shell />
+    </ErrorBoundary>
+  )
+}
+
+function Shell() {
   return (
     <div className="shell">
       <header className="header">

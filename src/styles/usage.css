@@ -47,6 +47,90 @@
   white-space: nowrap;
 }
 
+/* Loading, errors and stale data */
+
+.uloading {
+  display: inline-flex;
+  width: 14px;
+  color: var(--fg-2);
+}
+
+/* Quick polls finish before the spinner shows, so it doesn't flicker. */
+.uloading .spin {
+  animation:
+    reveal 0s 0.3s both,
+    spin 0.8s linear infinite;
+}
+
+@keyframes reveal {
+  from {
+    visibility: hidden;
+  }
+}
+
+.uerror {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.ubody {
+  transition: opacity 0.15s;
+}
+
+/* Shown while another range loads, so old numbers don't pass for new ones. */
+.ubody.is-stale {
+  opacity: 0.45;
+}
+
+.skel {
+  border-radius: var(--radius);
+  background: var(--bg-hover);
+  animation: skel-pulse 1.4s ease-in-out infinite;
+}
+
+.skel-hero {
+  width: 55%;
+  height: 44px;
+}
+
+.skel-line {
+  height: 12px;
+  margin-top: 10px;
+}
+
+.skel-chart {
+  height: 224px;
+}
+
+.skel-totals {
+  height: 74px;
+  border-radius: var(--radius-lg);
+}
+
+@keyframes skel-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel {
+    animation: none;
+  }
+
+  .uloading .spin {
+    animation:
+      reveal 0s 0.3s both,
+      spin 2.4s linear infinite;
+  }
+
+  .ubody {
+    transition: none;
+  }
+}
+
 /* Total and per-tool split */
 
 .uhero-cost {
