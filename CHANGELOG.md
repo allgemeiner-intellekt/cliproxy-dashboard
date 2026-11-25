@@ -46,7 +46,8 @@ First versioned release of this fork, a usage and cost dashboard for CLIProxyAPI
   states, polling pauses while the tab is hidden (#6).
 - HTTP API: Host check against DNS rebinding, JSON-only writes, JSON error
   responses, bounded import timestamps, `usage.db` created `0600` (#7).
-- Deploy hook: each signed request is accepted once, even across restarts.
+- Deploy hook: each signed request is accepted once, even across restarts
+  (used signatures are kept in `DEPLOY_STATE_FILE`).
   Request bodies are validated, and job status requires a signature and is
   never cached.
 

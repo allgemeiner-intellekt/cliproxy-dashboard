@@ -9,8 +9,9 @@
 //   GET:  over `${timestamp}.job ${id}`, e.g. `1790000000.job 7`
 // The timestamp must be within 5 minutes. Each POST signature is accepted
 // once, so a captured request can't be replayed inside that window. Used
-// signatures live in memory, so POSTs signed before this process started are
-// refused too: a restart can't reopen the window for an earlier request.
+// signatures are written to DEPLOY_STATE_FILE (default
+// /var/tmp/cliproxy-deploy-hook.json) before the deploy starts, so a restart
+// doesn't forget them.
 // Only apps listed in DEPLOY_APPS can be redeployed. The TrueNAS key
 // (DEPLOY_TRUENAS_KEY_FILE) never leaves this machine.
 //
@@ -18,17 +19,17 @@
 // answers 403 to a role-scoped API key that JSON-RPC accepts.
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 
 const MAX_SKEW_S = 300
 const MAX_BODY_BYTES = 4096
 const MAX_JOBS = 100
 const MAX_SIGNATURES = 10_000
-const startedAt = Math.floor(Date.now() / 1000)
 const secret = required('DEPLOY_SECRET')
 const apps = new Set(required('DEPLOY_APPS').split(',').map((a) => a.trim()))
 const truenasKey = readFileSync(required('DEPLOY_TRUENAS_KEY_FILE'), 'utf8').trim()
 const truenas = process.env.DEPLOY_TRUENAS_URL ?? 'ws://127.0.0.1/api/current'
+const stateFile = process.env.DEPLOY_STATE_FILE ?? '/var/tmp/cliproxy-deploy-hook.json'
 
 function required(name: string) {
   const value = process.env[name]
@@ -46,20 +47,35 @@ function signed(req: Request, payload: string) {
   return timingSafeEqual(Buffer.from(signature, 'hex'), expected)
 }
 
-// POST signatures seen within the skew window, with when they stop being valid.
-const usedSignatures = new Map<string, number>()
+// POST signatures seen within the skew window, with when they stop being
+// valid (unix seconds). A state file that exists but can't be read stops the
+// hook from starting, rather than silently forgetting what it accepted.
+const usedSignatures = new Map<string, number>(
+  existsSync(stateFile) ? Object.entries(JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, number>) : [],
+)
+
+function saveSignatures() {
+  const tmp = `${stateFile}.tmp`
+  writeFileSync(tmp, JSON.stringify(Object.fromEntries(usedSignatures)), { mode: 0o600 })
+  renameSync(tmp, stateFile)
+}
 
 // 'ok', or why this signed POST can't be accepted. Never evicts a live entry:
-// at capacity it refuses instead.
+// at capacity it refuses instead. The signature is on disk before 'ok'.
 function firstUse(req: Request): 'ok' | 'replay' | 'busy' {
   const now = Date.now() / 1000
-  const timestamp = Number(req.headers.get('x-deploy-timestamp'))
-  if (timestamp < startedAt) return 'replay'
   for (const [sig, expires] of usedSignatures) if (expires < now) usedSignatures.delete(sig)
   const signature = req.headers.get('x-deploy-signature')!.toLowerCase()
   if (usedSignatures.has(signature)) return 'replay'
   if (usedSignatures.size >= MAX_SIGNATURES) return 'busy'
-  usedSignatures.set(signature, timestamp + MAX_SKEW_S + 1)
+  usedSignatures.set(signature, Number(req.headers.get('x-deploy-timestamp')) + MAX_SKEW_S + 1)
+  try {
+    saveSignatures()
+  } catch (err) {
+    usedSignatures.delete(signature)
+    console.error(`[deploy] cannot record signature in ${stateFile}: ${(err as Error).message}`)
+    return 'busy'
+  }
   return 'ok'
 }
 
@@ -153,7 +169,7 @@ const server = Bun.serve({
       if (!signed(req, body)) return Response.json({ error: 'bad signature' }, { status: 401 })
       const use = firstUse(req)
       if (use === 'replay') return Response.json({ error: 'signature already used' }, { status: 409 })
-      if (use === 'busy') return Response.json({ error: 'too many recent deploy requests' }, { status: 503 })
+      if (use === 'busy') return Response.json({ error: 'cannot accept deploy requests right now' }, { status: 503 })
       const app = appFrom(body)
       if (app === null) return Response.json({ error: 'body must be {"app": "<name>"}' }, { status: 400 })
       if (!apps.has(app)) return Response.json({ error: `${app} is not deployable` }, { status: 403 })

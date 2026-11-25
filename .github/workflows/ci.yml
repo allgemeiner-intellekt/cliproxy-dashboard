@@ -226,47 +226,84 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Tag the published image with the version
+        shell: bash # -eo pipefail, so a failed lookup in a pipeline fails the step
         env:
-          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # Prints the tag's digest, or nothing if the tag doesn't exist.
+          # Any other lookup failure fails the step.
           digest_of() {
-            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest
+            local out
+            if out=$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>&1); then
+              jq -er .digest <<<"$out"
+            elif grep -qiE 'not found|manifest unknown' <<<"$out"; then
+              return 0
+            else
+              echo "::error::Looking up $1 failed: $out" >&2
+              return 1
+            fi
           }
           digest=$(digest_of "$IMAGE:$GITHUB_SHA")
-          if [ -z "$digest" ] || [ "$digest" = null ]; then
+          if [ -z "$digest" ]; then
             echo "::error::No image for $GITHUB_SHA. Tag a commit that main has published."
             exit 1
           fi
-          # A version tag never moves. A rerun with the same image is a no-op.
+          # A version tag never moves; if it already matches, leave it be.
           existing=$(digest_of "$IMAGE:$VERSION")
-          if [ -n "$existing" ] && [ "$existing" != null ] && [ "$existing" != "$digest" ]; then
+          tags=()
+          if [ -z "$existing" ]; then
+            tags+=(--tag "$IMAGE:$VERSION")
+          elif [ "$existing" != "$digest" ]; then
             echo "::error::$IMAGE:$VERSION already points at $existing, not $digest."
             exit 1
           fi
-          tags=(--tag "$IMAGE:$VERSION")
-          # Stable releases move X.Y, but only if this is the newest X.Y.* release
+          # Stable releases move X.Y, unless GHCR already has a newer X.Y.* image
           # (so rerunning an older tag can't roll it back).
           if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             minor=${VERSION%.*}
-            newest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$minor." --jq '.[].ref' \
-              | sed 's|^refs/tags/v||' | grep -E "^${minor//./\\.}\.[0-9]+$" | sort -V | tail -1)
+            repo=${IMAGE#ghcr.io/}
+            bearer=$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token)
+            published=()
+            url="https://ghcr.io/v2/$repo/tags/list?n=1000"
+            while [ -n "$url" ]; do
+              headers=$(mktemp)
+              page=$(curl -fsS -D "$headers" -H "Authorization: Bearer $bearer" "$url")
+              mapfile -t -O "${#published[@]}" published < <(jq -r '.tags // [] | .[]' <<<"$page")
+              next=$(grep -i '^link:' "$headers" | sed -n 's/.*<\([^>]*\)>.*/\1/p' || true)
+              url=${next:+https://ghcr.io$next}
+            done
+            newest=$( { printf '%s\n' "${published[@]}" "$VERSION"; } \
+              | grep -E "^${minor//./\\.}\.[0-9]+$" | sort -V | tail -1)
             if [ "$newest" = "$VERSION" ]; then
               tags+=(--tag "$IMAGE:$minor")
             else
-              echo "::notice::v$newest is newer than v$VERSION; leaving :$minor alone."
+              echo "::notice::$IMAGE:$newest is newer than $VERSION; leaving :$minor alone."
             fi
           fi
-          docker buildx imagetools create "${tags[@]}" "$IMAGE@$digest"
+          if [ ${#tags[@]} -gt 0 ]; then
+            docker buildx imagetools create "${tags[@]}" "$IMAGE@$digest"
+          else
+            echo "Nothing to tag."
+          fi
       - name: Create the GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>&1); then
+            if [ "$draft" = true ]; then
+              echo "::error::A draft release for $GITHUB_REF_NAME exists. Publish or delete it, then rerun."
+              exit 1
+            fi
             echo "Release $GITHUB_REF_NAME already exists."
             exit 0
+          elif ! grep -qi 'release not found' <<<"$draft"; then
+            echo "::error::Looking up release $GITHUB_REF_NAME failed: $draft"
+            exit 1
           fi
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi

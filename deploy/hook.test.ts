@@ -8,6 +8,7 @@ const SECRET = 'test-secret'
 const BODY = '{"app":"cliproxy-dashboard"}'
 let base = ''
 let hook: ReturnType<typeof Bun.spawn<'ignore', 'pipe', 'ignore'>>
+let dir = ''
 let truenas: ReturnType<typeof Bun.serve>
 
 // A fake TrueNAS JSON-RPC websocket. Each app.redeploy starts a new job, and
@@ -33,8 +34,15 @@ beforeAll(async () => {
       },
     },
   })
-  const dir = mkdtempSync(join(tmpdir(), 'hook-test-'))
+  dir = mkdtempSync(join(tmpdir(), 'hook-test-'))
   writeFileSync(join(dir, 'key'), 'truenas-key')
+  await startHook()
+})
+
+// Starts the hook (again) and waits for the port the kernel gave it.
+async function startHook() {
+  hook?.kill()
+  await hook?.exited
   hook = Bun.spawn([process.execPath, new URL('./hook.ts', import.meta.url).pathname], {
     env: {
       ...process.env,
@@ -42,13 +50,13 @@ beforeAll(async () => {
       DEPLOY_APPS: 'cliproxy-dashboard',
       DEPLOY_TRUENAS_KEY_FILE: join(dir, 'key'),
       DEPLOY_TRUENAS_URL: `ws://127.0.0.1:${truenas.port}`,
+      DEPLOY_STATE_FILE: join(dir, 'state.json'),
       DEPLOY_PORT: '0',
     },
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'ignore',
   })
-  // The hook prints the port the kernel gave it once it's listening.
   const decoder = new TextDecoder()
   let out = ''
   for await (const chunk of hook.stdout) {
@@ -60,7 +68,7 @@ beforeAll(async () => {
     }
   }
   throw new Error(`hook exited before listening: ${out}`)
-})
+}
 
 afterAll(() => {
   hook?.kill()
@@ -104,8 +112,19 @@ describe('deploy hook', () => {
     expect(nextJob).toBe(jobsBefore)
   })
 
-  test('refuses requests signed before the hook started', async () => {
-    expect((await deploy(BODY, sign(BODY, now() - 60))).status).toBe(409)
+  test('remembers used signatures across a restart, whatever the clock skew', async () => {
+    const bodies = [-60, 0, 60].map((skew) => {
+      const body = JSON.stringify({ app: 'cliproxy-dashboard', skew })
+      return { body, headers: sign(body, now() + skew) }
+    })
+    for (const { body, headers } of bodies) expect((await deploy(body, headers)).status).toBe(202)
+    await startHook()
+    for (const { body, headers } of bodies) expect((await deploy(body, headers)).status).toBe(409)
+    // Fresh requests right after the restart are fine, from a clock behind or ahead.
+    for (const skew of [-60, 0, 60]) {
+      const body = JSON.stringify({ app: 'cliproxy-dashboard', skew, fresh: true })
+      expect((await deploy(body, sign(body, now() + skew))).status).toBe(202)
+    }
   })
 
   test('rejects bad, stale and missing signatures', async () => {
