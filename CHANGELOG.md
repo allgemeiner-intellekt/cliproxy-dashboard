@@ -26,10 +26,18 @@ First versioned release of this fork, a usage and cost dashboard for CLIProxyAPI
   a migration drift check. PRs build the image without pushing, and pushes to
   main publish with provenance and SBOM attestations (#4).
 - Version tags publish `:X.Y.Z` and `:X.Y` images and a GitHub release.
+- Accessibility: higher text contrast, keyboard navigation and announcements
+  in the usage chart, labelled controls, larger touch targets, reduced-motion
+  support (#9).
+- Tests for the collector, importers and HTTP routes (#10) and for frontend
+  helpers (#9).
 
 ### Fixed
 
-- Collector: bad records and SQLite errors no longer crash it or drop a batch.
+- Collector: a bad record or a SQLite error no longer crashes it. Valid rows
+  in a batch are still stored, and failed writes are retried from a bounded
+  buffer of up to 5000 rows. Records that arrive while it's full are dropped
+  and logged.
   It reconnects after parse errors, stops retrying after an AUTH failure, and
   detects half-open connections (#3).
 - Startup no longer waits on the price download, keeps machine names when
@@ -38,8 +46,9 @@ First versioned release of this fork, a usage and cost dashboard for CLIProxyAPI
   states, polling pauses while the tab is hidden (#6).
 - HTTP API: Host check against DNS rebinding, JSON-only writes, JSON error
   responses, bounded import timestamps, `usage.db` created `0600` (#7).
-- Deploy hook: each signed request is accepted once, request bodies are
-  validated, and job status requires a signature.
+- Deploy hook: each signed request is accepted once, even across restarts.
+  Request bodies are validated, and job status requires a signature and is
+  never cached.
 
 [Unreleased]: https://github.com/allgemeiner-intellekt/cliproxy-dashboard/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/allgemeiner-intellekt/cliproxy-dashboard/releases/tag/v0.1.0

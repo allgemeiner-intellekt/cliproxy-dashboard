@@ -186,6 +186,10 @@ jobs:
     permissions:
       contents: write
       packages: write
+    # One at a time, so the X.Y check below sees every earlier release.
+    concurrency:
+      group: version-tags
+      queue: max
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -194,14 +198,20 @@ jobs:
         name: Check the tag matches package.json and CHANGELOG.md
         run: |
           version=$(jq -r .version package.json)
+          # SemVer without +build metadata, which Docker tags can't carry.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::package.json version $version must be X.Y.Z or X.Y.Z-prerelease."
+            exit 1
+          fi
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version $version."
             exit 1
           fi
-          notes=$(awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+          # The "## [X.Y.Z]" section, matched literally, up to the next "## ".
+          notes=$(awk -v h="## [$version]" '
             found && /^## / { exit }
             found { print }
+            index($0, h) == 1 { found = 1 }
           ' CHANGELOG.md)
           if [ -z "$(tr -d '[:space:]' <<<"$notes")" ]; then
             echo "::error::CHANGELOG.md has no section for $version."
@@ -217,22 +227,47 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Tag the published image with the version
         env:
+          GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/${{ github.repository }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if ! docker buildx imagetools inspect "$IMAGE:$GITHUB_SHA" >/dev/null 2>&1; then
+          digest_of() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest
+          }
+          digest=$(digest_of "$IMAGE:$GITHUB_SHA")
+          if [ -z "$digest" ] || [ "$digest" = null ]; then
             echo "::error::No image for $GITHUB_SHA. Tag a commit that main has published."
             exit 1
           fi
+          # A version tag never moves. A rerun with the same image is a no-op.
+          existing=$(digest_of "$IMAGE:$VERSION")
+          if [ -n "$existing" ] && [ "$existing" != null ] && [ "$existing" != "$digest" ]; then
+            echo "::error::$IMAGE:$VERSION already points at $existing, not $digest."
+            exit 1
+          fi
           tags=(--tag "$IMAGE:$VERSION")
-          # Stable releases also move the X.Y tag.
-          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then tags+=(--tag "$IMAGE:${VERSION%.*}"); fi
-          docker buildx imagetools create "${tags[@]}" "$IMAGE:$GITHUB_SHA"
+          # Stable releases move X.Y, but only if this is the newest X.Y.* release
+          # (so rerunning an older tag can't roll it back).
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            minor=${VERSION%.*}
+            newest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$minor." --jq '.[].ref' \
+              | sed 's|^refs/tags/v||' | grep -E "^${minor//./\\.}\.[0-9]+$" | sort -V | tail -1)
+            if [ "$newest" = "$VERSION" ]; then
+              tags+=(--tag "$IMAGE:$minor")
+            else
+              echo "::notice::v$newest is newer than v$VERSION; leaving :$minor alone."
+            fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE@$digest"
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists."
+            exit 0
+          fi
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \

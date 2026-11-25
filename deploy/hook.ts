@@ -8,7 +8,9 @@
 //   POST: over `${timestamp}.${body}`
 //   GET:  over `${timestamp}.job ${id}`, e.g. `1790000000.job 7`
 // The timestamp must be within 5 minutes. Each POST signature is accepted
-// once, so a captured request can't be replayed inside that window.
+// once, so a captured request can't be replayed inside that window. Used
+// signatures live in memory, so POSTs signed before this process started are
+// refused too: a restart can't reopen the window for an earlier request.
 // Only apps listed in DEPLOY_APPS can be redeployed. The TrueNAS key
 // (DEPLOY_TRUENAS_KEY_FILE) never leaves this machine.
 //
@@ -21,6 +23,8 @@ import { readFileSync } from 'node:fs'
 const MAX_SKEW_S = 300
 const MAX_BODY_BYTES = 4096
 const MAX_JOBS = 100
+const MAX_SIGNATURES = 10_000
+const startedAt = Math.floor(Date.now() / 1000)
 const secret = required('DEPLOY_SECRET')
 const apps = new Set(required('DEPLOY_APPS').split(',').map((a) => a.trim()))
 const truenasKey = readFileSync(required('DEPLOY_TRUENAS_KEY_FILE'), 'utf8').trim()
@@ -45,13 +49,18 @@ function signed(req: Request, payload: string) {
 // POST signatures seen within the skew window, with when they stop being valid.
 const usedSignatures = new Map<string, number>()
 
-function firstUse(req: Request) {
+// 'ok', or why this signed POST can't be accepted. Never evicts a live entry:
+// at capacity it refuses instead.
+function firstUse(req: Request): 'ok' | 'replay' | 'busy' {
   const now = Date.now() / 1000
+  const timestamp = Number(req.headers.get('x-deploy-timestamp'))
+  if (timestamp < startedAt) return 'replay'
   for (const [sig, expires] of usedSignatures) if (expires < now) usedSignatures.delete(sig)
   const signature = req.headers.get('x-deploy-signature')!.toLowerCase()
-  if (usedSignatures.has(signature)) return false
-  usedSignatures.set(signature, Number(req.headers.get('x-deploy-timestamp')) + MAX_SKEW_S + 1)
-  return true
+  if (usedSignatures.has(signature)) return 'replay'
+  if (usedSignatures.size >= MAX_SIGNATURES) return 'busy'
+  usedSignatures.set(signature, timestamp + MAX_SKEW_S + 1)
+  return 'ok'
 }
 
 function appFrom(body: string): string | null {
@@ -102,9 +111,8 @@ async function session() {
 type JobState = { state: 'RUNNING' | 'SUCCESS' | 'FAILED'; error: string | null }
 const jobs = new Map<number, JobState>()
 
-function track(job: number, state: JobState) {
-  jobs.delete(job)
-  jobs.set(job, state)
+function startTracking(job: number) {
+  jobs.set(job, { state: 'RUNNING', error: null })
   // Maps iterate in insertion order: drop the oldest.
   for (const id of jobs.keys()) {
     if (jobs.size <= MAX_JOBS) break
@@ -112,14 +120,19 @@ function track(job: number, state: JobState) {
   }
 }
 
+// Updates in place (keeping its age), and only if the job is still tracked.
+function finish(job: number, state: JobState) {
+  if (jobs.has(job)) jobs.set(job, state)
+}
+
 async function redeploy(app: string) {
   const s = await session()
   try {
     const job = Number(await s.call('app.redeploy', [app]))
-    track(job, { state: 'RUNNING', error: null })
+    startTracking(job)
     s.call('core.job_wait', [job])
-      .then(() => track(job, { state: 'SUCCESS', error: null }))
-      .catch((err: Error) => track(job, { state: 'FAILED', error: err.message }))
+      .then(() => finish(job, { state: 'SUCCESS', error: null }))
+      .catch((err: Error) => finish(job, { state: 'FAILED', error: err.message }))
       .finally(s.close)
     return job
   } catch (err) {
@@ -128,7 +141,7 @@ async function redeploy(app: string) {
   }
 }
 
-Bun.serve({
+const server = Bun.serve({
   hostname: '127.0.0.1',
   port: Number(process.env.DEPLOY_PORT ?? 30091),
   maxRequestBodySize: MAX_BODY_BYTES,
@@ -138,7 +151,9 @@ Bun.serve({
     if (req.method === 'POST' && url.pathname === '/deploy') {
       const body = await req.text()
       if (!signed(req, body)) return Response.json({ error: 'bad signature' }, { status: 401 })
-      if (!firstUse(req)) return Response.json({ error: 'signature already used' }, { status: 409 })
+      const use = firstUse(req)
+      if (use === 'replay') return Response.json({ error: 'signature already used' }, { status: 409 })
+      if (use === 'busy') return Response.json({ error: 'too many recent deploy requests' }, { status: 503 })
       const app = appFrom(body)
       if (app === null) return Response.json({ error: 'body must be {"app": "<name>"}' }, { status: 400 })
       if (!apps.has(app)) return Response.json({ error: `${app} is not deployable` }, { status: 403 })
@@ -156,12 +171,15 @@ Bun.serve({
     const match = url.pathname.match(/^\/deploy\/jobs\/(\d+)$/)
     if (req.method === 'GET' && match) {
       // Job errors come from TrueNAS, so only signed callers see them.
-      if (!signed(req, `job ${match[1]}`)) return Response.json({ error: 'bad signature' }, { status: 401 })
+      // no-store: a shared cache in front must not hand a signed answer to an
+      // unsigned request for the same URL.
+      const headers = { 'Cache-Control': 'no-store' }
+      if (!signed(req, `job ${match[1]}`)) return Response.json({ error: 'bad signature' }, { status: 401, headers })
       const job = jobs.get(Number(match[1]))
-      if (job) return Response.json(job)
+      return job ? Response.json(job, { headers }) : Response.json({ error: 'not found' }, { status: 404, headers })
     }
 
     return Response.json({ error: 'not found' }, { status: 404 })
   },
 })
-console.log('[deploy] listening')
+console.log(`[deploy] listening on ${server.port}`)

@@ -5,24 +5,31 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const SECRET = 'test-secret'
-const port = 40000 + Math.floor(Math.random() * 20000)
-const base = `http://127.0.0.1:${port}`
-let hook: ReturnType<typeof Bun.spawn>
+const BODY = '{"app":"cliproxy-dashboard"}'
+let base = ''
+let hook: ReturnType<typeof Bun.spawn<'ignore', 'pipe', 'ignore'>>
 let truenas: ReturnType<typeof Bun.serve>
-let redeploys = 0
 
-// A fake TrueNAS JSON-RPC websocket: accepts the key, starts job 7, and
-// finishes it straight away.
+// A fake TrueNAS JSON-RPC websocket. Each app.redeploy starts a new job, and
+// core.job_wait answers only when the test calls finishJob().
+let nextJob = 1
+const waits = new Map<number, (error?: string) => void>()
+const finishJob = (job: number, error?: string) => waits.get(job)!(error)
+
 beforeAll(async () => {
   truenas = Bun.serve({
     port: 0,
+    hostname: '127.0.0.1',
     fetch: (req, server) => (server.upgrade(req, { data: undefined }) ? undefined : new Response('no', { status: 400 })),
     websocket: {
       message(ws, raw) {
-        const { id, method } = JSON.parse(String(raw)) as { id: number; method: string }
-        if (method === 'app.redeploy') redeploys++
-        const result = method === 'auth.login_with_api_key' ? true : method === 'app.redeploy' ? 7 : null
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id, result }))
+        const { id, method, params } = JSON.parse(String(raw)) as { id: number; method: string; params: unknown[] }
+        const reply = (msg: object) => ws.send(JSON.stringify({ jsonrpc: '2.0', id, ...msg }))
+        if (method === 'auth.login_with_api_key') reply({ result: true })
+        else if (method === 'app.redeploy') reply({ result: nextJob++ })
+        else if (method === 'core.job_wait') {
+          waits.set(Number(params[0]), (error) => reply(error ? { error: { message: error } } : { result: null }))
+        }
       },
     },
   })
@@ -35,16 +42,24 @@ beforeAll(async () => {
       DEPLOY_APPS: 'cliproxy-dashboard',
       DEPLOY_TRUENAS_KEY_FILE: join(dir, 'key'),
       DEPLOY_TRUENAS_URL: `ws://127.0.0.1:${truenas.port}`,
-      DEPLOY_PORT: String(port),
+      DEPLOY_PORT: '0',
     },
-    stdout: 'ignore',
+    stdin: 'ignore',
+    stdout: 'pipe',
     stderr: 'ignore',
   })
-  for (let i = 0; i < 100; i++) {
-    if (await fetch(base).then(() => true, () => false)) return
-    await Bun.sleep(50)
+  // The hook prints the port the kernel gave it once it's listening.
+  const decoder = new TextDecoder()
+  let out = ''
+  for await (const chunk of hook.stdout) {
+    out += decoder.decode(chunk)
+    const port = out.match(/listening on (\d+)/)?.[1]
+    if (port) {
+      base = `http://127.0.0.1:${port}`
+      return
+    }
   }
-  throw new Error('hook did not start')
+  throw new Error(`hook exited before listening: ${out}`)
 })
 
 afterAll(() => {
@@ -52,49 +67,81 @@ afterAll(() => {
   truenas?.stop(true)
 })
 
-const sign = (payload: string, ts = Math.floor(Date.now() / 1000)) => ({
+const now = () => Math.floor(Date.now() / 1000)
+const sign = (payload: string, ts = now()) => ({
   'X-Deploy-Timestamp': String(ts),
   'X-Deploy-Signature': createHmac('sha256', SECRET).update(`${ts}.${payload}`).digest('hex'),
 })
-const deploy = (body: string, headers = sign(body)) => fetch(`${base}/deploy`, { method: 'POST', body, headers })
+const deploy = (body: string, headers: Record<string, string> = sign(body)) =>
+  fetch(`${base}/deploy`, { method: 'POST', body, headers })
+const status = (job: number, headers: Record<string, string> = sign(`job ${job}`)) =>
+  fetch(`${base}/deploy/jobs/${job}`, { headers })
+// Same body and second means the same signature, so vary the body.
+let nonce = 0
+const startJob = async () => {
+  const res = await deploy(JSON.stringify({ app: 'cliproxy-dashboard', nonce: nonce++ }))
+  expect(res.status).toBe(202)
+  return ((await res.json()) as { job: number }).job
+}
+const settled = async (job: number, state: string) => {
+  for (let i = 0; i < 100; i++) {
+    const body = (await (await status(job)).json()) as { state: string; error: string | null }
+    if (body.state === state) return body
+    await Bun.sleep(10)
+  }
+  throw new Error(`job ${job} never reached ${state}`)
+}
+const waitForWait = async (job: number) => {
+  for (let i = 0; i < 100 && !waits.has(job); i++) await Bun.sleep(10)
+}
 
 describe('deploy hook', () => {
   test('a signed request starts a job, and the same request is not accepted twice', async () => {
-    const body = '{"app":"cliproxy-dashboard"}'
-    const headers = sign(body)
-    const first = await deploy(body, headers)
-    expect(first.status).toBe(202)
-    expect(await first.json()).toEqual({ job: 7 })
-    const replay = await deploy(body, headers)
-    expect(replay.status).toBe(409)
-    expect(redeploys).toBe(1)
+    const headers = sign(BODY)
+    expect((await deploy(BODY, headers)).status).toBe(202)
+    const jobsBefore = nextJob
+    expect((await deploy(BODY, headers)).status).toBe(409)
+    expect(nextJob).toBe(jobsBefore)
+  })
+
+  test('refuses requests signed before the hook started', async () => {
+    expect((await deploy(BODY, sign(BODY, now() - 60))).status).toBe(409)
   })
 
   test('rejects bad, stale and missing signatures', async () => {
-    const body = '{"app":"cliproxy-dashboard"}'
-    expect((await deploy(body, { ...sign(body), 'X-Deploy-Signature': '00'.repeat(32) })).status).toBe(401)
-    expect((await deploy(body, sign(body, Math.floor(Date.now() / 1000) - 301))).status).toBe(401)
-    expect((await deploy(body, {} as ReturnType<typeof sign>)).status).toBe(401)
+    expect((await deploy(BODY, { ...sign(BODY), 'X-Deploy-Signature': '00'.repeat(32) })).status).toBe(401)
+    expect((await deploy(BODY, sign(BODY, now() - 301))).status).toBe(401)
+    expect((await deploy(BODY, {})).status).toBe(401)
   })
 
   test('rejects a signed body that is not {"app": "<name>"}', async () => {
-    for (const body of ['not json', 'null', '[]', '{"app":1}', '{}']) {
-      expect((await deploy(body)).status).toBe(400)
-    }
+    for (const body of ['not json', 'null', '[]', '{"app":1}', '{}']) expect((await deploy(body)).status).toBe(400)
     expect((await deploy('{"app":"other"}')).status).toBe(403)
   })
 
-  test('job status needs a signature for that job', async () => {
-    expect((await fetch(`${base}/deploy/jobs/7`)).status).toBe(401)
-    expect((await fetch(`${base}/deploy/jobs/7`, { headers: sign('job 8') })).status).toBe(401)
-    const res = await fetch(`${base}/deploy/jobs/7`, { headers: sign('job 7') })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ state: 'SUCCESS', error: null })
-    expect((await fetch(`${base}/deploy/jobs/9`, { headers: sign('job 9') })).status).toBe(404)
+  test('job status needs a signature for that job and is never cached', async () => {
+    const job = await startJob()
+    expect((await status(job, {})).status).toBe(401)
+    expect((await status(job, sign(`job ${job + 1}`))).status).toBe(401)
+
+    const running = await status(job)
+    expect(running.headers.get('cache-control')).toBe('no-store')
+    expect(await running.json()).toEqual({ state: 'RUNNING', error: null })
+
+    await waitForWait(job)
+    finishJob(job)
+    expect(await settled(job, 'SUCCESS')).toEqual({ state: 'SUCCESS', error: null })
+    expect((await status(9999)).status).toBe(404)
+  })
+
+  test('reports a failed job', async () => {
+    const job = await startJob()
+    await waitForWait(job)
+    finishJob(job, 'image pull failed')
+    expect(await settled(job, 'FAILED')).toEqual({ state: 'FAILED', error: 'image pull failed' })
   })
 
   test('rejects oversized bodies', async () => {
-    const body = JSON.stringify({ app: 'x'.repeat(5000) })
-    expect((await deploy(body)).status).toBe(413)
+    expect((await deploy(JSON.stringify({ app: 'x'.repeat(5000) }))).status).toBe(413)
   })
 })
