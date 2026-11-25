@@ -483,14 +483,18 @@ export function UsagePage() {
       {failed && (
         <div className="uerror" role="alert">
           <span className="error-text">Couldn’t load usage: {failed}</span>
+          {/* Disabled while any load (e.g. the one on returning to the tab) is
+              running, so clicking doesn't abort a recovery already underway. */}
           <button
             className="btn"
+            disabled={busy}
             onClick={() => {
               setError(null)
               refresh()
             }}
           >
-            Retry
+            {busy ? <LoaderCircle size={14} className="spin" aria-hidden /> : null}
+            {busy ? 'Retrying…' : 'Retry'}
           </button>
         </div>
       )}

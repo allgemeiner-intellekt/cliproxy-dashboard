@@ -36,15 +36,28 @@ export function Segmented<T extends string>({
 }
 
 // Toasts stack, newest at the bottom. Info toasts go away on their own; errors
-// stay until dismissed, so there is time to read them.
+// stay until dismissed, so there is time to read them. At most four show at
+// once: errors first, oldest first, with any further errors queued behind them
+// and shown as earlier ones are dismissed.
 type ToastKind = 'info' | 'error'
 type ToastItem = { id: number; kind: ToastKind; msg: string }
 
 const INFO_TOAST_MS = 4000
-const MAX_TOASTS = 4
+const MAX_VISIBLE = 4
+const MAX_QUEUED_ERRORS = 50
 
 let pushToast: (msg: string, kind: ToastKind) => void = () => {}
 export const toast = (msg: string, kind: ToastKind = 'error') => pushToast(msg, kind)
+
+// Which toasts are on screen: the oldest errors, then the newest info toasts in
+// the slots that are left. Kept in arrival order.
+function visibleToasts<T extends { kind: ToastKind }>(items: T[], max = MAX_VISIBLE): { shown: T[]; queued: number } {
+  const errors = items.filter((t) => t.kind === 'error')
+  const keep = new Set<T>(errors.slice(0, max))
+  const infos = items.filter((t) => t.kind === 'info')
+  for (const t of infos.slice(Math.max(0, infos.length - (max - keep.size)))) keep.add(t)
+  return { shown: items.filter((t) => keep.has(t)), queued: Math.max(0, errors.length - max) }
+}
 
 export function Toaster() {
   const [items, setItems] = useState<ToastItem[]>([])
@@ -57,13 +70,12 @@ export function Toaster() {
       setItems((prev) => {
         // The same message again replaces the earlier copy instead of piling up.
         const next = [...prev.filter((t) => t.msg !== msg || t.kind !== kind), { id, kind, msg }]
-        // Over the cap, drop the oldest info toast first; errors go only when
-        // the stack is all errors.
-        while (next.length > MAX_TOASTS) {
-          const info = next.findIndex((t) => t.kind === 'info')
-          next.splice(info >= 0 ? info : 0, 1)
-        }
-        return next
+        // Info toasts are transient, so only the newest few are kept; errors
+        // are kept (bounded) until dismissed.
+        const infos = next.filter((t) => t.kind === 'info').slice(0, -MAX_VISIBLE)
+        const errors = next.filter((t) => t.kind === 'error').slice(0, -MAX_QUEUED_ERRORS)
+        const drop = new Set([...infos, ...errors])
+        return next.filter((t) => !drop.has(t))
       })
       if (kind === 'info') {
         const timer = setTimeout(() => {
@@ -80,10 +92,11 @@ export function Toaster() {
   }, [])
 
   const dismiss = (id: number) => setItems((prev) => prev.filter((t) => t.id !== id))
+  const { shown, queued } = visibleToasts(items)
 
   return (
     <div className="toasts">
-      {items.map((t) => (
+      {shown.map((t) => (
         <div key={t.id} className={`toast toast-${t.kind}`} role={t.kind === 'error' ? 'alert' : 'status'}>
           {t.kind === 'error' && <CircleAlert size={14} className="toast-icon" aria-hidden />}
           <span className="toast-msg">{t.msg}</span>
@@ -92,6 +105,11 @@ export function Toaster() {
           </button>
         </div>
       ))}
+      {queued > 0 && (
+        <div className="toast-more mono faint">
+          {queued} more {queued === 1 ? 'error' : 'errors'}
+        </div>
+      )}
     </div>
   )
 }

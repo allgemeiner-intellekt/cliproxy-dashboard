@@ -335,8 +335,13 @@ select.input {
   cursor: pointer;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--bg-hover);
+}
+
+.btn:disabled {
+  color: var(--fg-2);
+  cursor: default;
 }
 
 .btn:focus-visible,
@@ -403,6 +408,10 @@ select.input {
 .toast-msg {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.toast-more {
+  font-size: 12px;
 }
 
 .toast-close {
