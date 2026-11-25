@@ -6,6 +6,7 @@ import type { CliproxyCollector, CollectorStatus } from '../collector/cliproxy'
 import type { Db } from '../db/client'
 import { importTranscripts, type TranscriptFile } from '../import/importer'
 import { clearIdentityName, listDevices, nameIdentity, type IdentityKind } from '../machines'
+import { systemInfo } from '../system'
 import type { Tailnet } from '../tailnet'
 import type { PriceBook } from '../usage/pricing'
 import { RANGES, slotAlignedTimeZone, usageSummary, type Range } from '../usage/summary'
@@ -23,6 +24,8 @@ const isKind = (k: unknown): k is IdentityKind => k === 'key' || k === 'ip'
 export type AppOptions = {
   // Host names to accept besides the built-in safe ones (see guard.ts).
   allowedHosts?: string[]
+  dbPath?: string
+  listenAddress?: string
 }
 
 export function createApp(db: Db, collector: CliproxyCollector, prices: PriceBook, tailnet: Tailnet, options: AppOptions = {}) {
@@ -93,6 +96,41 @@ export function createApp(db: Db, collector: CliproxyCollector, prices: PriceBoo
     if (!isKind(kind) || typeof value !== 'string' || !value) return c.json({ error: 'kind and value are required' }, 400)
     clearIdentityName(db, kind, value)
     return c.json({ ok: true })
+  })
+
+  // System transparency: collector target/status, effective pricing for used
+  // models, storage stats, and read-only runtime configuration.
+  app.get('/system', (c) =>
+    c.json(
+      systemInfo(db, collector, prices, tailnet, {
+        dbPath: options.dbPath,
+        listenAddress: options.listenAddress,
+        allowedHosts: options.allowedHosts,
+      }),
+    ),
+  )
+
+  // Tears down the current subscription/backoff and waits for the fresh
+  // handshake to settle (bounded) so callers immediately see the new state.
+  app.post('/collector/reconnect', async (c) => {
+    await jsonBody(c)
+    await collector.reconnect()
+    return c.json({ ok: collector.status.connected, collector: collector.status })
+  })
+
+  // Downloads the latest LiteLLM price table and backfills unpriced rows via onRefresh.
+  app.post('/pricing/refresh', async (c) => {
+    await jsonBody(c)
+    const downloaded = await prices.refresh()
+    const repriced = downloaded && !prices.lastRepriceError
+    return c.json({
+      ok: repriced,
+      downloaded,
+      repriced,
+      error: downloaded ? prices.lastRepriceError : null,
+      loadedAt: prices.loadedAt,
+      totalCatalogModels: prices.modelCount,
+    })
   })
 
   return app

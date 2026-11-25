@@ -6,7 +6,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-const PRICE_TABLE_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
+export const PRICE_TABLE_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const REFRESH_EVERY_MS = 24 * 3600e3
 // After a failed download, try again sooner than the daily refresh.
 const RETRY_AFTER_FAILURE_MS = 15 * 60e3
@@ -76,8 +76,17 @@ export class PriceBook {
   // repricing or a busy collector asks for the same few models constantly.
   private lookups = new Map<string, Priced | null>()
   loadedAt: number | null = null
+  lastRepriceError: string | null = null
 
   constructor(private cachePath: string) {}
+
+  get path(): string {
+    return this.cachePath
+  }
+
+  get modelCount(): number {
+    return Object.keys(this.table).length
+  }
 
   private setTable(table: Record<string, LiteLlmEntry>) {
     this.table = table
@@ -160,10 +169,12 @@ export class PriceBook {
     } catch (err) {
       console.warn(`[pricing] could not write price cache: ${(err as Error).message}`)
     }
+    this.lastRepriceError = null
     try {
       this.onRefresh()
     } catch (err) {
-      console.error(`[pricing] onRefresh failed: ${(err as Error).message}`)
+      this.lastRepriceError = (err as Error).message
+      console.error(`[pricing] onRefresh failed: ${this.lastRepriceError}`)
     }
     return true
   }

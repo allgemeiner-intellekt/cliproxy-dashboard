@@ -37,15 +37,33 @@ export function monotonePath(points: Point[]): string {
 }
 
 // Day keys are already local dates ("YYYY-MM-DD"), so format them as-is (UTC);
-// hour keys are instants, shown in local time.
+// hour keys are instants, formatted in the summary's reporting time zone.
 const dayKeyFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 const weekdayFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'UTC' })
-const hourFmt = new Intl.DateTimeFormat('en-US', { hour: 'numeric' })
-const hourLongFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' })
+const hourFmts = new Map<string, Intl.DateTimeFormat>()
+const hourLongFmts = new Map<string, Intl.DateTimeFormat>()
 
-export function bucketLabel(key: number | string, long = false) {
+function getHourFmt(long: boolean, timeZone?: string): Intl.DateTimeFormat {
+  const key = timeZone ?? ''
+  const cache = long ? hourLongFmts : hourFmts
+  let fmt = cache.get(key)
+  if (!fmt) {
+    const opts: Intl.DateTimeFormatOptions = long
+      ? { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', ...(timeZone ? { timeZone } : {}) }
+      : { hour: 'numeric', ...(timeZone ? { timeZone } : {}) }
+    try {
+      fmt = new Intl.DateTimeFormat('en-US', opts)
+    } catch {
+      fmt = new Intl.DateTimeFormat('en-US', long ? { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' } : { hour: 'numeric' })
+    }
+    cache.set(key, fmt)
+  }
+  return fmt
+}
+
+export function bucketLabel(key: number | string, long = false, timeZone?: string) {
   if (typeof key === 'string') return dayKeyFmt.format(new Date(`${key}T00:00:00Z`))
-  return (long ? hourLongFmt : hourFmt).format(key)
+  return getHourFmt(long, timeZone).format(key)
 }
 
 // "Mon" for a local day key ("YYYY-MM-DD").

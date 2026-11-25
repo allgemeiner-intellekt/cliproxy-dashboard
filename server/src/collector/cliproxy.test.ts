@@ -271,7 +271,8 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
 
     expect(authAttempts).toBe(1)
     expect(collector.status.connected).toBe(false)
-    expect(collector.status.lastError).toContain('WRONGPASS')
+    expect(collector.status.authFailed).toBe(true)
+    expect(collector.status.lastError).toBe('Authentication failed: check CPA_MANAGEMENT_KEY')
   })
 
   test('detects half-open connection via PING timeout, reconnects, and stays open across interleaved PING/PONG + messages (D7)', async () => {
@@ -726,5 +727,77 @@ describe('T3: a permanently bad row', () => {
       'cliproxy:ok-2:2026-11-24T12:00:00.000Z',
     ])
     expect(collector.status.connected).toBe(true)
+  })
+})
+
+describe('reconnect & auth error hygiene', () => {
+  test('manual reconnect lets an in-flight LPOP finish and persist without losing queued records', async () => {
+    const queue = [makeRecord('reconnect-in-flight')]
+    let lpopStarted = false
+    const fake = await startFakeResp((cmd, socket) => {
+      const op = cmd[0].toUpperCase()
+      if (op === 'AUTH') socket.write('+OK\r\n')
+      else if (op === 'SUBSCRIBE') socket.write(encodeResp(['subscribe', cmd[1], '1']))
+      else if (op === 'LPOP') {
+        const items = queue.splice(0, queue.length)
+        if (!lpopStarted) {
+          lpopStarted = true
+          // Hold the reply open while manual reconnect runs.
+          setTimeout(() => socket.write(encodeResp(items)), 80)
+        } else {
+          socket.write(encodeResp(items))
+        }
+      } else if (op === 'PING') socket.write('+PONG\r\n')
+    })
+    cleanups.push(() => {
+      for (const s of fake.sockets) s.destroy()
+      fake.server.close()
+    })
+
+    const db = openDb(':memory:')
+    const collector = new CliproxyCollector(db, new PriceBook(''), {
+      host: '127.0.0.1',
+      port: fake.port,
+      managementKey: 'secret',
+      drainTimeoutMs: 500,
+      initialBackoffMs: 25,
+    })
+    cleanups.push(() => collector.stop())
+
+    collector.start()
+    await waitFor(() => lpopStarted)
+    await collector.reconnect(1000)
+    await waitFor(() => collector.status.stored === 1)
+    expect(db.select().from(requests).all().map((r) => r.id)).toEqual([
+      'cliproxy:reconnect-in-flight:2026-11-24T12:00:00.000Z',
+    ])
+  })
+
+  test('upstream AUTH error echoing CPA_MANAGEMENT_KEY never leaks the key into status.lastError', async () => {
+    const secret = 'super-secret-cpa-key-999'
+    const fake = await startFakeResp((cmd, socket) => {
+      if (cmd[0].toUpperCase() === 'AUTH') {
+        socket.write(`-ERR invalid password "${cmd[1]}"\r\n`)
+      }
+    })
+    cleanups.push(() => {
+      for (const s of fake.sockets) s.destroy()
+      fake.server.close()
+    })
+
+    const db = openDb(':memory:')
+    const collector = new CliproxyCollector(db, new PriceBook(''), {
+      host: '127.0.0.1',
+      port: fake.port,
+      managementKey: secret,
+      drainTimeoutMs: 500,
+      initialBackoffMs: 25,
+    })
+    cleanups.push(() => collector.stop())
+
+    collector.start()
+    await waitFor(() => collector.status.authFailed)
+    expect(collector.status.lastError).toBe('Authentication failed: check CPA_MANAGEMENT_KEY')
+    expect(collector.status.lastError).not.toContain(secret)
   })
 })

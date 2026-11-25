@@ -51,6 +51,9 @@ The server logs `[collector] subscribed to CLIProxyAPI usage` once it is receivi
 | -------- | ------- |
 | `GET /api/usage?range=30d&tz=UTC` | Aggregated cost, tokens, time series, and breakdowns by provider, model, machine, and account (`range`: `24h`, `7d`, `30d`, `90d`, `all`) |
 | `GET /api/health` | Collector connection status, price table timestamp, and Tailscale sync status |
+| `GET /api/system` | Collector target/status, effective pricing table for used models, storage stats, and read-only runtime info |
+| `POST /api/collector/reconnect` | Trigger a fresh CLIProxyAPI usage stream connection (resets backoff and auth-error halt) |
+| `POST /api/pricing/refresh` | Download the latest LiteLLM price table and backfill unpriced requests |
 | `GET /api/devices` | Known client keys/IPs with resolved machine names and totals |
 | `PUT /api/devices/name` | Assign a custom machine name to a `key` or `ip` identity |
 | `DELETE /api/devices/name` | Clear a custom machine name |

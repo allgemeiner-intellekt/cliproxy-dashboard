@@ -31,7 +31,7 @@ export function usePoll(task: (signal: AbortSignal) => Promise<void>, everyMs: n
     const start = () => {
       stop()
       run()
-      timer = setInterval(run, everyMs)
+      if (everyMs > 0) timer = setInterval(run, everyMs)
     }
     const onVisibility = () => (document.hidden ? stop() : start())
 

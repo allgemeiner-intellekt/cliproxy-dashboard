@@ -44,6 +44,7 @@ export type UsageSummary = {
 export type Health = {
   collector: {
     connected: boolean
+    authFailed?: boolean
     since: number | null
     lastRecordAt: number | null
     stored: number
@@ -52,6 +53,61 @@ export type Health = {
   }
   pricesLoadedAt: number | null
   tailnet: { syncedAt: number | null; error: string | null }
+}
+
+export type BaseRates = {
+  input: number
+  output: number
+  cacheRead: number | null
+  cacheWrite: number | null
+}
+
+export type ModelRates = BaseRates & {
+  tiers?: { aboveTokens: number; rates: BaseRates }[]
+}
+
+export type UsedModelPricing = {
+  model: string
+  provider: string
+  pricedAs: string | null
+  matchKind: 'exact' | 'fallback' | 'unpriced'
+  requests: number
+  unpricedRequests: number
+  rates: ModelRates | null
+}
+
+export type SystemInfo = {
+  collector: {
+    target: string | null
+    keyConfigured: boolean
+    connected: boolean
+    authFailed: boolean
+    since: number | null
+    downSince: number | null
+    lastRecordAt: number | null
+    stored: number
+    lastError: string | null
+  }
+  pricing: {
+    loadedAt: number | null
+    cachePath: string
+    totalCatalogModels: number
+    usedModels: UsedModelPricing[]
+  }
+  storage: {
+    dbPath: string
+    dbSizeBytes: number
+    walSizeBytes: number
+    totalRequests: number
+    unpricedRequests: number
+    earliestAt: number | null
+    latestAt: number | null
+  }
+  runtime: {
+    listenAddress: string | null
+    allowedHosts: string[]
+    tailnet: { syncedAt: number | null; error: string | null }
+  }
 }
 
 export type IdentityKind = 'key' | 'ip'
@@ -161,11 +217,44 @@ export async function getHealth(signal?: AbortSignal): Promise<Health> {
   if (!isHealth(health)) throw new Error('Unexpected response from the usage server')
   return health
 }
-export async function getUsage(range: Range, signal?: AbortSignal): Promise<UsageSummary> {
-  const summary = await api<unknown>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
+export async function getUsage(range: Range, signal?: AbortSignal, tz?: string): Promise<UsageSummary> {
+  const zone = tz || timeZone()
+  const summary = await api<unknown>(`/usage?range=${range}&tz=${encodeURIComponent(zone)}`, { signal })
   if (!isUsageSummary(summary)) throw new Error('Unexpected response from the usage server')
   return summary
 }
+
+const isSystemInfo = (v: unknown): v is SystemInfo =>
+  isObject(v) &&
+  isObject(v.collector) &&
+  typeof v.collector.connected === 'boolean' &&
+  isObject(v.pricing) &&
+  Array.isArray(v.pricing.usedModels) &&
+  isObject(v.storage) &&
+  typeof v.storage.totalRequests === 'number' &&
+  isObject(v.runtime) &&
+  Array.isArray(v.runtime.allowedHosts)
+
+export async function getSystem(signal?: AbortSignal): Promise<SystemInfo> {
+  const info = await api<unknown>('/system', { signal })
+  if (!isSystemInfo(info)) throw new Error('Unexpected response from the usage server')
+  return info
+}
+
+export const reconnectCollector = () =>
+  api<{ ok: boolean; collector?: Health['collector'] }>('/collector/reconnect', { method: 'POST', body: '{}' })
+
+// Server allows 30 s for the LiteLLM download plus synchronous repricing of
+// unpriced rows, so give the browser ample headroom before timing out.
+export const refreshPricing = () =>
+  api<{
+    ok: boolean
+    downloaded?: boolean
+    repriced?: boolean
+    error?: string | null
+    loadedAt: number | null
+    totalCatalogModels: number
+  }>('/pricing/refresh', { method: 'POST', body: '{}' }, 90e3)
 
 export const nameDevice = (kind: IdentityKind, value: string, name: string) =>
   api('/devices/name', { method: 'PUT', body: JSON.stringify({ kind, value, name }) })
