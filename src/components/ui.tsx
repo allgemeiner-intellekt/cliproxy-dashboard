@@ -54,8 +54,17 @@ export function Toaster() {
     const timers = new Set<ReturnType<typeof setTimeout>>()
     pushToast = (msg, kind) => {
       const id = ++nextId
-      // The same message again replaces the earlier copy instead of piling up.
-      setItems((prev) => [...prev.filter((t) => t.msg !== msg), { id, kind, msg }].slice(-MAX_TOASTS))
+      setItems((prev) => {
+        // The same message again replaces the earlier copy instead of piling up.
+        const next = [...prev.filter((t) => t.msg !== msg || t.kind !== kind), { id, kind, msg }]
+        // Over the cap, drop the oldest info toast first; errors go only when
+        // the stack is all errors.
+        while (next.length > MAX_TOASTS) {
+          const info = next.findIndex((t) => t.kind === 'info')
+          next.splice(info >= 0 ? info : 0, 1)
+        }
+        return next
+      })
       if (kind === 'info') {
         const timer = setTimeout(() => {
           timers.delete(timer)

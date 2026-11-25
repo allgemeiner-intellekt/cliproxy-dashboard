@@ -383,8 +383,9 @@ function EmptyRow({ cols }: { cols: number }) {
 // Placeholder shaped like the hero, chart and totals, shown until the first load.
 function UsageSkeleton() {
   return (
-    <div className="uskeleton" aria-hidden>
-      <div className="utop">
+    <div className="uskeleton" role="status">
+      <span className="sr-only">Loading usage</span>
+      <div className="utop" aria-hidden>
         <div>
           <div className="skel skel-hero" />
           <div className="skel skel-line" style={{ width: '60%' }} />
@@ -402,7 +403,7 @@ function UsageSkeleton() {
           <div className="skel skel-chart" />
         </div>
       </div>
-      <section className="section">
+      <section className="section" aria-hidden>
         <div className="skel skel-totals" />
       </section>
     </div>
@@ -415,10 +416,12 @@ export function UsagePage() {
   // the old numbers as stale (not as the new range) until the new ones arrive.
   const [data, setData] = useState<{ range: Range; summary: UsageSummary } | null>(null)
   const [error, setError] = useState<{ range: Range; message: string } | null>(null)
+  const [busy, setBusy] = useState(false) // a request is in flight
 
   const load = useCallback(
     async (signal: AbortSignal) => {
       const range = prefs.range
+      setBusy(true)
       try {
         const summary = await getUsage(range, signal)
         if (signal.aborted) return
@@ -427,6 +430,9 @@ export function UsagePage() {
       } catch (err) {
         if (signal.aborted || isAbort(err)) return
         setError({ range, message: (err as Error).message })
+      } finally {
+        // An aborted run was replaced by a newer one, which owns `busy` now.
+        if (!signal.aborted) setBusy(false)
       }
     },
     [prefs.range],
@@ -436,7 +442,6 @@ export function UsagePage() {
   const summary = data?.summary ?? null
   const failed = error?.range === prefs.range ? error.message : null
   const stale = data !== null && data.range !== prefs.range
-  const loading = (data === null || stale) && !failed
   const chartTitle = `${summary?.bucket === 'hour' ? 'Hourly' : 'Daily'} ${prefs.metric === 'cost' ? 'cost' : 'processed tokens'}`
 
   return (
@@ -464,8 +469,9 @@ export function UsagePage() {
             </option>
           ))}
         </select>
-        <span className="uloading" role="status" aria-live="polite">
-          {stale && loading && (
+        {/* Any refresh, including polls and the one on returning to the tab. */}
+        <span className="uloading" role="status">
+          {summary && busy && (
             <>
               <LoaderCircle size={14} className="spin" aria-hidden />
               <span className="sr-only">Loading</span>
@@ -493,7 +499,7 @@ export function UsagePage() {
 
       {/* A failed switch hides the previous range's numbers rather than leave them up. */}
       {summary && !(stale && failed) && (
-        <div className={stale ? 'ubody is-stale' : 'ubody'} aria-busy={loading}>
+        <div className={stale ? 'ubody is-stale' : 'ubody'} aria-busy={busy}>
           <div className="utop">
             <Hero summary={summary} metric={prefs.metric} />
             <div>

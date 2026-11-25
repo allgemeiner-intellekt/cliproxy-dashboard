@@ -7,7 +7,8 @@ import { useCallback, useEffect, useRef } from 'react'
 // so does a change of `task` (wrap it in useCallback) or unmounting, so a slow
 // response from an earlier run can never land after a newer one.
 //
-// Returns `refresh`, which runs the task now (e.g. after an edit or a retry).
+// Returns `refresh`, which runs the task now (e.g. after an edit or a retry),
+// or on return if the tab is hidden.
 export function usePoll(task: (signal: AbortSignal) => Promise<void>, everyMs: number): () => void {
   const runRef = useRef<() => void>(() => {})
 
@@ -16,6 +17,8 @@ export function usePoll(task: (signal: AbortSignal) => Promise<void>, everyMs: n
     let timer: ReturnType<typeof setInterval> | undefined
 
     const run = () => {
+      // Hidden tabs don't fetch, even on refresh(); coming back runs it anyway.
+      if (document.hidden) return
       controller?.abort()
       const current = new AbortController()
       controller = current

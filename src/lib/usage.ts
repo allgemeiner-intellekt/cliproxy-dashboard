@@ -58,31 +58,64 @@ export type IdentityKind = 'key' | 'ip'
 const TIMEOUT_MS = 20e3
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  // A hung server fails the request instead of leaving the page loading forever.
-  const timeout = AbortSignal.timeout(TIMEOUT_MS)
+  // One controller for both the caller's cancellation and our timeout, so a hung
+  // server fails the request instead of leaving the page loading forever.
+  // (Not AbortSignal.any/timeout: too new for some supported Safari versions.)
+  const controller = new AbortController()
+  const outer = init?.signal
+  const cancel = () => controller.abort()
+  if (outer?.aborted) cancel()
+  outer?.addEventListener('abort', cancel)
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, TIMEOUT_MS)
   try {
     const res = await fetch(`/api${path}`, {
       ...init,
-      signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+      signal: controller.signal,
       headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
-      throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+      throw new Error((body as { error?: string } | null)?.error ?? `HTTP ${res.status}`)
     }
     return (await res.json()) as T
   } catch (err) {
-    if (timeout.aborted && !init?.signal?.aborted) throw new Error('Request timed out')
+    if (timedOut && !outer?.aborted) throw new Error('Request timed out')
     throw err
+  } finally {
+    clearTimeout(timer)
+    outer?.removeEventListener('abort', cancel)
   }
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
+
+// Rejects a response that isn't shaped like a summary, so it shows up as a load
+// error with Retry instead of crashing (or blanking) the page.
+export function assertUsageSummary(v: unknown): asserts v is UsageSummary {
+  const ok =
+    isObject(v) &&
+    isObject(v.totals) &&
+    typeof v.totals.costMicros === 'number' &&
+    typeof v.totals.sessions === 'number' &&
+    (v.bucket === 'hour' || v.bucket === 'day') &&
+    typeof v.timeZone === 'string' &&
+    ['providers', 'series', 'byModel', 'byMachine', 'byAccount'].every((k) => Array.isArray(v[k]))
+  if (!ok) throw new Error('Unexpected response from the usage server')
 }
 
 // The viewer's time zone, so days are local days.
 const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
 export const getHealth = (signal?: AbortSignal) => api<Health>('/health', { signal })
-export const getUsage = (range: Range, signal?: AbortSignal) =>
-  api<UsageSummary>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
+export async function getUsage(range: Range, signal?: AbortSignal): Promise<UsageSummary> {
+  const summary = await api<unknown>(`/usage?range=${range}&tz=${encodeURIComponent(timeZone())}`, { signal })
+  assertUsageSummary(summary)
+  return summary
+}
 
 export const nameDevice = (kind: IdentityKind, value: string, name: string) =>
   api('/devices/name', { method: 'PUT', body: JSON.stringify({ kind, value, name }) })

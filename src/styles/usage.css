@@ -55,6 +55,19 @@
   color: var(--fg-2);
 }
 
+/* Quick polls finish before the spinner shows, so it doesn't flicker. */
+.uloading .spin {
+  animation:
+    reveal 0s 0.3s both,
+    spin 0.8s linear infinite;
+}
+
+@keyframes reveal {
+  from {
+    visibility: hidden;
+  }
+}
+
 .uerror {
   display: flex;
   align-items: center;
@@ -105,6 +118,12 @@
 @media (prefers-reduced-motion: reduce) {
   .skel {
     animation: none;
+  }
+
+  .uloading .spin {
+    animation:
+      reveal 0s 0.3s both,
+      spin 2.4s linear infinite;
   }
 
   .ubody {
