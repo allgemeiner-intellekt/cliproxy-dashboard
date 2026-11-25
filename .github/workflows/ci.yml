@@ -3,18 +3,27 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
+# PR runs replace each other. Main runs don't share a group; the release job
+# queues instead, so no passing commit is dropped.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - run: npm ci
@@ -22,3 +31,138 @@ jobs:
       - run: npm run server:check
       - run: npm run build
       - run: bun test
+      - name: Check migrations match the schema
+        run: |
+          npx drizzle-kit check
+          # Builds one database from the migrations and one from the schema
+          # and compares them. Catches hand-edited migration SQL.
+          bun scripts/check-migrations.ts
+          # Also catches a stale snapshot. A change drizzle-kit can only
+          # resolve interactively (e.g. a rename) prints an error and exits 0,
+          # so require the explicit no-change message.
+          out=$(npx drizzle-kit generate 2>&1 </dev/null) || { echo "$out"; exit 1; }
+          echo "$out"
+          if ! grep -q 'No schema changes' <<<"$out" || [ -n "$(git status --porcelain -- server/drizzle)" ]; then
+            git status --porcelain -- server/drizzle
+            echo "::error::server/src/db/schema.ts changed without a matching migration. Run 'npm run db:generate' and commit server/drizzle/."
+            exit 1
+          fi
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  # Builds the image without pushing (PRs and manual runs on other branches).
+  image:
+    needs: check
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Pushes the image from main, tagged only by commit SHA, once check passes.
+  publish:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=sha,format=long,prefix=
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Points :main at the published digest and deploys it, one run at a time.
+  # The lock covers both, so a newer run can't retag :main while the hook is
+  # still pulling. Only the tip of main is promoted, so an older run or a
+  # rerun can't roll :main back.
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: release-main
+      queue: max
+    steps:
+      - id: tip
+        name: Check this commit is still the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo latest=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $tip, not $GITHUB_SHA. Not promoting or deploying this commit."
+            echo latest=false >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.tip.outputs.latest == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: steps.tip.outputs.latest == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image as :main
+        if: steps.tip.outputs.latest == 'true'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: docker buildx imagetools create --tag "$IMAGE:main" "$IMAGE@$DIGEST"
+      - name: Deploy
+        if: steps.tip.outputs.latest == 'true' && vars.DEPLOY_HOOK_URL != ''
+        env:
+          DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
+          DEPLOY_HOOK_URL: ${{ vars.DEPLOY_HOOK_URL }}
+        run: |
+          body='{"app":"cliproxy-dashboard"}'
+          ts=$(date +%s)
+          sig=$(printf '%s' "$ts.$body" | openssl dgst -sha256 -hmac "$DEPLOY_SECRET" -hex | sed 's/.* //')
+          job=$(curl -fsS -H "X-Deploy-Timestamp: $ts" -H "X-Deploy-Signature: $sig" -d "$body" "$DEPLOY_HOOK_URL" | jq -r .job)
+          for _ in $(seq 60); do
+            read -r state error < <(curl -fsS "$DEPLOY_HOOK_URL/jobs/$job" | jq -r '[.state, (.error // "")] | @tsv')
+            case "$state" in
+              SUCCESS) echo "deployed (job $job)"; exit 0 ;;
+              FAILED|ABORTED) echo "deploy failed: $error"; exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "deploy timed out (job $job)"; exit 1
