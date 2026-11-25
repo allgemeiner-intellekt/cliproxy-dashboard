@@ -4,6 +4,7 @@
 // Fills use the dot-matrix pattern; strokes stay solid.
 
 import { useEffect, useRef, useState } from 'react'
+import { bucketLabel, chartKeyTarget, describeBucket, monotonePath, niceScale, weekdayLabel } from '../lib/chart'
 import { bucketDay, byProviderOrder, formatTokens, formatUsd, providerColor, providerLabel, type UsageSummary } from '../lib/usage'
 
 const HEIGHT = 224
@@ -12,7 +13,6 @@ const PAD_TOP = 8
 const PAD_BOTTOM = 8 // room for the "0" label below the baseline
 
 type Metric = 'cost' | 'tokens'
-type Point = [x: number, y: number]
 
 function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null)
@@ -26,56 +26,8 @@ function useWidth<T extends HTMLElement>() {
   return [ref, width] as const
 }
 
-// Step of 1, 2 or 5 × 10ⁿ giving about `ticks` intervals up to `max`.
-function niceScale(max: number, ticks: number) {
-  if (max <= 0) return { top: ticks, step: 1 }
-  const raw = max / ticks
-  const magnitude = 10 ** Math.floor(Math.log10(raw))
-  const step = [1, 2, 5, 10].map((m) => m * magnitude).find((s) => s >= raw)!
-  return { top: Math.ceil(max / step) * step, step }
-}
-
-// Monotone cubic interpolation (Fritsch–Carlson) as an SVG path.
-function monotonePath(points: Point[]): string {
-  const n = points.length
-  if (n === 0) return ''
-  if (n === 1) return `M${points[0][0]},${points[0][1]}`
-  const dx = points.slice(1).map((p, i) => p[0] - points[i][0])
-  const slope = points.slice(1).map((p, i) => (p[1] - points[i][1]) / dx[i])
-  const tangent = points.map((_, i) => {
-    if (i === 0) return slope[0]
-    if (i === n - 1) return slope[n - 2]
-    // Flat at local extrema, so the curve never overshoots.
-    if (slope[i - 1] * slope[i] <= 0) return 0
-    return (3 * (dx[i - 1] + dx[i])) / ((2 * dx[i] + dx[i - 1]) / slope[i - 1] + (dx[i] + 2 * dx[i - 1]) / slope[i])
-  })
-  let d = `M${points[0][0]},${points[0][1]}`
-  for (let i = 0; i < n - 1; i++) {
-    const [x0, y0] = points[i]
-    const [x1, y1] = points[i + 1]
-    const h = dx[i] / 3
-    d += `C${x0 + h},${y0 + h * tangent[i]} ${x1 - h},${y1 - h * tangent[i + 1]} ${x1},${y1}`
-  }
-  return d
-}
-
-// Day keys are already local dates ("YYYY-MM-DD"), so format them as-is (UTC);
-// hour keys are instants, shown in local time.
-const dayKeyFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-const weekdayFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'UTC' })
-const hourFmt = new Intl.DateTimeFormat('en-US', { hour: 'numeric' })
-const hourLongFmt = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric' })
-
-export function bucketLabel(key: number | string, long = false) {
-  if (typeof key === 'string') return dayKeyFmt.format(new Date(`${key}T00:00:00Z`))
-  return (long ? hourLongFmt : hourFmt).format(key)
-}
-
-// Muted slate, sand, rose and sage. Machine areas overlap, so every pair must
-// stay distinguishable, including for color-blind viewers: each sits at a
-// different lightness, and the set passes the dataviz palette checks for all
-// pairs on the dark surface. Past four machines, the smallest fold into "Other".
-const MACHINE_COLORS = ['#5485c4', '#b58a3a', '#a65778', '#3e7232']
+// Machine colors (CSS --series-*). Past four machines, the smallest fold into "Other".
+const MACHINE_COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)']
 const OTHER_COLOR = 'var(--fg-3)'
 
 type Line = { id: string; label: string; color: string; values: number[] }
@@ -126,6 +78,9 @@ function dayStarts(summary: UsageSummary) {
 export function UsageChart({ summary, metric, by }: { summary: UsageSummary; metric: Metric; by: ChartGroup }) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hover, setHover] = useState<number | null>(null)
+  // Set while the hovered bucket was picked with the keyboard, so only those
+  // moves are announced (pointer moves would flood a screen reader).
+  const [keyboard, setKeyboard] = useState(false)
 
   const valueOf = (p?: { costMicros: number; tokens: number }) => (p ? (metric === 'cost' ? p.costMicros : p.tokens) : 0)
   const format = (v: number) => (metric === 'cost' ? formatUsd(v) : formatTokens(v))
@@ -147,11 +102,27 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const left = e.clientX - e.currentTarget.getBoundingClientRect().left - AXIS_W
     const i = Math.round((left / plotW) * (count - 1))
+    setKeyboard(false)
     setHover(i >= 0 && i < count ? i : null)
   }
 
+  // Arrow keys step through the buckets; Home and End jump to either end.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!count) return
+    const at = hover ?? count - 1
+    const next = chartKeyTarget(e.key, at, count)
+    if (next === undefined) return
+    e.preventDefault()
+    setKeyboard(next !== null)
+    setHover(next)
+  }
+
+  const unit = summary.bucket === 'hour' ? 'hour' : 'day'
+  const chartLabel = `${metric === 'cost' ? 'Cost' : 'Tokens'} over time by ${by}`
+
   const days = summary.range === '7d' ? dayStarts(summary) : []
-  const labels = count ? [0, Math.floor((count - 1) / 2), count - 1] : []
+  // First, middle and last; fewer when there are only one or two buckets.
+  const labels = [...new Set(count ? [0, Math.floor((count - 1) / 2), count - 1] : [])]
   const hovered = hover === null ? null : summary.series[hover]
 
   return (
@@ -167,9 +138,27 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
           ))}
         </div>
       )}
-      <div className="uchart-plot" ref={ref}>
+      <div
+        className="uchart-plot"
+        ref={ref}
+        tabIndex={count ? 0 : undefined}
+        role="group"
+        aria-roledescription="chart"
+        aria-label={count ? `${chartLabel}. Use the arrow keys to read each ${unit}.` : chartLabel}
+        onKeyDown={onKeyDown}
+        onFocus={() => {
+          if (hover === null && count) {
+            setKeyboard(true)
+            setHover(count - 1)
+          }
+        }}
+        onBlur={() => {
+          setKeyboard(false)
+          setHover(null)
+        }}
+      >
         {width > 0 && (
-          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => setHover(null)} role="img" aria-label={`${metric === 'cost' ? 'Cost' : 'Tokens'} over time by ${by}`}>
+          <svg width={width} height={HEIGHT} onPointerMove={onMove} onPointerLeave={() => !keyboard && setHover(null)} aria-hidden>
             <defs>
               {lines.map((l, i) => (
                 <pattern key={l.id} id={`dots-${by}-${i}`} width="3" height="3" patternUnits="userSpaceOnUse">
@@ -212,8 +201,11 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
             {hover !== null && <line className="crosshair" x1={x(hover)} x2={x(hover)} y1={PAD_TOP} y2={y(0)} />}
           </svg>
         )}
+        <div className="sr-only" aria-live="polite">
+          {keyboard && hovered && hover !== null ? describeBucket(bucketLabel(hovered.key, true), lines, hover, format) : ''}
+        </div>
         {hovered && hover !== null && (
-          <div className="tooltip" style={{ left: Math.min(x(hover) + 12, width - 200) }}>
+          <div className="tooltip" aria-hidden style={{ left: Math.min(x(hover) + 12, width - 200) }}>
             <div className="tooltip-title">{bucketLabel(hovered.key, true)}</div>
             {lines.map((l) => (
               <div key={l.id} className="tooltip-row">
@@ -233,7 +225,7 @@ export function UsageChart({ summary, metric, by }: { summary: UsageSummary; met
         <div className="uchart-x uchart-x-days mono">
           {days.map((d, i) => (
             <span key={d.index} style={{ left: (x(d.index) + x(days[i + 1]?.index ?? count - 1)) / 2 }}>
-              {weekdayFmt.format(new Date(`${d.day}T00:00:00Z`))}
+              {weekdayLabel(d.day)}
             </span>
           ))}
         </div>
