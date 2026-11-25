@@ -31,9 +31,9 @@ function collectionStart(db: Db): number {
   return row?.first ? row.first.getTime() : Date.now()
 }
 
-function parseFile(file: TranscriptFile): TranscriptRecord[] {
+function parseFile(file: TranscriptFile, cutoffMs: number): TranscriptRecord[] {
   if (file.tool === 'claude-code') return file.lines.map(parseClaudeLine).filter((r) => r !== null)
-  const state = newCodexState()
+  const state = newCodexState(cutoffMs)
   return file.lines.map((line) => parseCodexLine(line, state)).filter((r) => r !== null)
 }
 
@@ -45,19 +45,20 @@ export function importTranscripts(db: Db, prices: PriceBook, files: TranscriptFi
   const seen = new Set<string>()
 
   db.transaction((tx) => {
-    for (const record of files.flatMap(parseFile)) {
-      // Before dedup: a copy with a bad clock mustn't claim the key of a valid one.
+    for (const record of files.flatMap((file) => parseFile(file, cutoffMs))) {
+      // Eligibility before dedup: a copy that is skipped (bad clock, or after
+      // the cutoff) mustn't claim the key of an eligible copy.
       if (!isPlausibleTimestamp(record.timestampMs)) {
         result.invalidTimestamp++
+        continue
+      }
+      if (record.timestampMs >= cutoffMs) {
+        result.afterCutoff++
         continue
       }
       // Claude repeats a message's usage across lines; keep the first.
       if (seen.has(record.key)) continue
       seen.add(record.key)
-      if (record.timestampMs >= cutoffMs) {
-        result.afterCutoff++
-        continue
-      }
 
       const tokens = { input: record.uncached, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite, output: record.output }
       const price = prices.lookup(record.model)

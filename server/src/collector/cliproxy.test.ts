@@ -585,3 +585,147 @@ describe('D1, S10, D7: CliproxyCollector & RespConnection reliability', () => {
     expect((caught as Error).message).toBe('ERR bad auth')
   })
 })
+
+describe('T3: live delivery and reconnection', () => {
+  // A fake proxy that, like CLIProxyAPI, serves only the "usage" channel and
+  // queue, and logs the order of subscriptions and pops.
+  async function fakeProxy(options: { dropFirstConnections?: number } = {}) {
+    const queue: string[] = []
+    const events: string[] = []
+    const subscribers: Socket[] = []
+    let toDrop = options.dropFirstConnections ?? 0
+    const fake = await startFakeResp((cmd, socket) => {
+      const op = cmd[0].toUpperCase()
+      if (op === 'AUTH') socket.write('+OK\r\n')
+      else if (op === 'SUBSCRIBE') {
+        if (cmd[1] !== 'usage') return void socket.write(`-ERR unknown channel ${cmd[1]}\r\n`)
+        subscribers.push(socket)
+        events.push('subscribed')
+        socket.write(encodeResp(['subscribe', 'usage', '1']))
+      } else if (op === 'LPOP') {
+        events.push('lpop')
+        socket.write(cmd[1] === 'usage' ? encodeResp(queue.splice(0, Number(cmd[2] ?? 1))) : '$-1\r\n')
+      } else if (op === 'PING') socket.write('+PONG\r\n')
+    })
+    fake.server.prependListener('connection', (socket: Socket) => {
+      if (toDrop > 0) {
+        toDrop--
+        socket.destroy()
+      }
+    })
+    cleanups.push(() => {
+      for (const s of fake.sockets) s.destroy()
+      fake.server.close()
+    })
+    const live = () => subscribers.filter((s) => !s.destroyed)
+    return {
+      port: fake.port,
+      queue,
+      events,
+      subscribes: () => events.filter((e) => e === 'subscribed').length,
+      publish: (payload: string) => {
+        for (const s of live()) s.write(encodeResp(['message', 'usage', payload]))
+      },
+      dropSubscribers: () => {
+        for (const s of live()) s.destroy()
+      },
+    }
+  }
+
+  function collectorFor(port: number) {
+    const db = openDb(':memory:')
+    const collector = new CliproxyCollector(db, new PriceBook(db, ''), { host: '127.0.0.1', port, managementKey: 'secret', initialBackoffMs: 25 })
+    cleanups.push(() => collector.stop())
+    return { db, collector }
+  }
+
+  const ids = (db: ReturnType<typeof openDb>) => db.select().from(requests).all().map((r) => r.id.split(':')[1]).sort()
+
+  test('stores live pub/sub records and counts a redelivered one once', async () => {
+    const proxy = await fakeProxy()
+    const { db, collector } = collectorFor(proxy.port)
+    collector.start()
+    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected)
+
+    proxy.publish(makeRecord('live-1'))
+    proxy.publish(makeRecord('live-1'))
+    proxy.publish('{"support_refresh":true}')
+    proxy.publish(makeRecord('live-2'))
+    // Same socket, so once this lands everything before it was handled.
+    proxy.publish(makeRecord('barrier'))
+    await waitFor(() => ids(db).includes('barrier'))
+
+    expect(ids(db)).toEqual(['barrier', 'live-1', 'live-2'])
+    expect(collector.status.stored).toBe(3)
+    expect(collector.status.lastRecordAt).not.toBeNull()
+  })
+
+  test('after a dropped connection it resubscribes before draining what queued meanwhile', async () => {
+    const proxy = await fakeProxy()
+    const { db, collector } = collectorFor(proxy.port)
+    collector.start()
+    // Let the initial (empty) drain finish so its pops aren't mistaken for the reconnect's.
+    await waitFor(() => proxy.subscribes() === 1 && collector.status.connected && proxy.events.includes('lpop'))
+    proxy.publish(makeRecord('before'))
+    await waitFor(() => collector.status.stored === 1)
+
+    // Records produced while disconnected wait in the proxy's queue, more
+    // than one LPOP batch's worth.
+    const queued = Array.from({ length: 1234 }, (_, i) => `queued-${String(i).padStart(4, '0')}`)
+    proxy.queue.push(...queued.map((id) => makeRecord(id)))
+    const eventsBefore = proxy.events.length
+    proxy.dropSubscribers()
+    await waitFor(() => proxy.subscribes() === 2)
+    await waitFor(() => collector.status.stored === 1 + queued.length, 5000)
+
+    // Subscribing first means nothing published during the drain is missed.
+    const after = proxy.events.slice(eventsBefore)
+    expect(after.indexOf('subscribed')).toBeGreaterThanOrEqual(0)
+    expect(after.indexOf('subscribed')).toBeLessThan(after.indexOf('lpop'))
+    expect(proxy.queue).toHaveLength(0)
+
+    proxy.publish(makeRecord('after'))
+    await waitFor(() => collector.status.stored === 2 + queued.length)
+    expect(ids(db)).toEqual(['after', 'before', ...queued].sort())
+  })
+
+  test('keeps retrying while the proxy refuses connections, then connects', async () => {
+    const proxy = await fakeProxy({ dropFirstConnections: 2 })
+    const { collector } = collectorFor(proxy.port)
+    collector.start()
+    await waitFor(() => collector.status.connected, 3000)
+    expect(proxy.subscribes()).toBe(1)
+    expect(collector.status.lastError).toBeNull()
+  })
+})
+
+describe('T3: a permanently bad row', () => {
+  test('a non-retryable insert error drops only that row; its batch siblings are stored', async () => {
+    const queue = [makeRecord('ok-1'), makeRecord('poison'), makeRecord('ok-2')]
+    const fake = await startFakeResp((cmd, socket) => {
+      const op = cmd[0].toUpperCase()
+      if (op === 'AUTH') socket.write('+OK\r\n')
+      else if (op === 'SUBSCRIBE') socket.write(encodeResp(['subscribe', cmd[1], '1']))
+      else if (op === 'LPOP') socket.write(encodeResp(queue.splice(0, queue.length)))
+      else if (op === 'PING') socket.write('+PONG\r\n')
+    })
+    cleanups.push(() => {
+      for (const s of fake.sockets) s.destroy()
+      fake.server.close()
+    })
+
+    const db = openDb(':memory:')
+    // A constraint-style failure SQLite won't succeed on retry.
+    db.run(sql`CREATE TRIGGER reject_poison BEFORE INSERT ON requests WHEN NEW.id LIKE '%poison%' BEGIN SELECT RAISE(ABORT, 'poisoned row'); END`)
+    const collector = new CliproxyCollector(db, new PriceBook(db, ''), { host: '127.0.0.1', port: fake.port, managementKey: 'secret', initialBackoffMs: 25 })
+    cleanups.push(() => collector.stop())
+
+    collector.start()
+    await waitFor(() => collector.status.stored === 2)
+    expect(db.select().from(requests).all().map((r) => r.id).sort()).toEqual([
+      'cliproxy:ok-1:2026-11-24T12:00:00.000Z',
+      'cliproxy:ok-2:2026-11-24T12:00:00.000Z',
+    ])
+    expect(collector.status.connected).toBe(true)
+  })
+})
