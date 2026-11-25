@@ -4,13 +4,17 @@
 // Subscription accounts aren't billed per token; this answers "what would
 // this usage have cost on the pay-as-you-go API".
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Db } from '../db/client'
 import { priceOverrides } from '../db/schema'
 
 const PRICE_TABLE_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const REFRESH_EVERY_MS = 24 * 3600e3
+// After a failed download, try again sooner than the daily refresh.
+const RETRY_AFTER_FAILURE_MS = 15 * 60e3
+// A stalled download (DNS black hole, captive portal) gives up after this.
+const FETCH_TIMEOUT_MS = 30e3
 
 // Micro-dollars per million tokens.
 export type Rates = {
@@ -69,27 +73,86 @@ export class PriceBook {
   // Called after each successful refresh, e.g. to reprice stored rows.
   onRefresh: () => void = () => {}
 
-  async start() {
+  private refreshing: Promise<boolean> | null = null
+  private timer?: ReturnType<typeof setTimeout>
+  private running: Promise<boolean> | null = null
+
+  // Loads overrides and the cached table from disk. Synchronous, so pricing
+  // works from the last good table before any download.
+  load() {
     this.loadOverrides()
     this.loadCache()
-    await this.refresh()
-    setInterval(() => this.refresh(), REFRESH_EVERY_MS)
   }
 
-  // Downloads the latest table; on failure keeps whatever is cached.
-  async refresh() {
+  // Loads what's on disk, then refreshes in the background: daily, or sooner
+  // after a failure. Returns at once; the promise settles with the first
+  // refresh's outcome, for work that should wait for fresh prices if it can.
+  start(): Promise<boolean> {
+    if (this.running) return this.running
+    this.load()
+    const tick = async () => {
+      const ok = await this.refresh()
+      if (this.running === first) this.timer = setTimeout(tick, ok ? REFRESH_EVERY_MS : RETRY_AFTER_FAILURE_MS)
+      return ok
+    }
+    const first = tick()
+    this.running = first
+    return first
+  }
+
+  stop() {
+    this.running = null
+    clearTimeout(this.timer)
+  }
+
+  // Downloads the latest table; on failure keeps whatever is loaded. Resolves
+  // to whether it succeeded. Concurrent calls share one download.
+  refresh(timeoutMs = FETCH_TIMEOUT_MS): Promise<boolean> {
+    this.refreshing ??= this.download(timeoutMs).finally(() => {
+      this.refreshing = null
+    })
+    return this.refreshing
+  }
+
+  private async download(timeoutMs: number) {
+    let table: Record<string, LiteLlmEntry>
+    let text: string
     try {
-      const res = await fetch(PRICE_TABLE_URL)
+      const res = await fetch(PRICE_TABLE_URL, { signal: AbortSignal.timeout(timeoutMs) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const text = await res.text()
-      this.table = JSON.parse(text)
-      this.loadedAt = Date.now()
+      text = await res.text()
+      table = parsePriceTable(text)
+    } catch (err) {
+      console.warn(`[pricing] refresh failed, keeping ${this.loadedAt ? 'cached' : 'empty'} table: ${(err as Error).message}`)
+      return false
+    }
+    this.table = table
+    this.loadedAt = Date.now()
+    try {
+      // Write beside the cache and rename over it, so a failed or partial
+      // write never replaces the last good copy.
       mkdirSync(dirname(this.cachePath), { recursive: true })
-      writeFileSync(this.cachePath, text)
+      const tmp = `${this.cachePath}.${process.pid}.tmp`
+      try {
+        writeFileSync(tmp, text)
+        renameSync(tmp, this.cachePath)
+      } catch (err) {
+        try {
+          rmSync(tmp, { force: true })
+        } catch {
+          // best effort
+        }
+        throw err
+      }
+    } catch (err) {
+      console.warn(`[pricing] could not write price cache: ${(err as Error).message}`)
+    }
+    try {
       this.onRefresh()
     } catch (err) {
-      console.warn(`[pricing] refresh failed, using cached table: ${(err as Error).message}`)
+      console.error(`[pricing] onRefresh failed: ${(err as Error).message}`)
     }
+    return true
   }
 
   loadOverrides() {
@@ -105,11 +168,18 @@ export class PriceBook {
   }
 
   private loadCache() {
+    let text: string
     try {
-      this.table = JSON.parse(readFileSync(this.cachePath, 'utf8'))
-      this.loadedAt = Date.now()
+      text = readFileSync(this.cachePath, 'utf8')
     } catch {
-      // no cache yet
+      return // no cache yet
+    }
+    try {
+      this.table = parsePriceTable(text)
+      // The table is as fresh as the download that wrote the cache.
+      this.loadedAt = statSync(this.cachePath).mtimeMs
+    } catch (err) {
+      console.warn(`[pricing] ignoring unreadable price cache: ${(err as Error).message}`)
     }
   }
 
@@ -158,6 +228,37 @@ export class PriceBook {
       },
     }
   }
+}
+
+// Parses LiteLLM's table. Anything that isn't a JSON object of model entries
+// (an HTML error page, a truncated or garbled download) is rejected so it
+// can't replace a good table; malformed entries and rates are dropped.
+function parsePriceTable(text: string): Record<string, LiteLlmEntry> {
+  const raw: unknown = JSON.parse(text)
+  if (!isObject(raw)) throw new Error('price table is not a JSON object')
+  const table: Record<string, LiteLlmEntry> = {}
+  for (const [model, value] of Object.entries(raw)) {
+    if (!isObject(value)) continue
+    const entry: LiteLlmEntry = {}
+    if (typeof value.litellm_provider === 'string') entry.litellm_provider = value.litellm_provider
+    if (typeof value.mode === 'string') entry.mode = value.mode
+    for (const field of RATE_FIELDS) {
+      const rate = value[field]
+      if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) entry[field] = rate
+    }
+    // Without both required rates an entry can't price anything; dropping it
+    // lets lookup fall through to another provider's listing of the model.
+    if (entry.input_cost_per_token == null || entry.output_cost_per_token == null) continue
+    table[model] = entry
+  }
+  if (!Object.keys(table).length) throw new Error('price table has no priced models')
+  return table
+}
+
+const RATE_FIELDS = ['input_cost_per_token', 'output_cost_per_token', 'cache_read_input_token_cost', 'cache_creation_input_token_cost'] as const
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function rank(e: LiteLlmEntry) {

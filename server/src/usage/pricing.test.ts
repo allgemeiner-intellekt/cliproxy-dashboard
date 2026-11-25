@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openDb } from '../db/client'
 import { PriceBook } from './pricing'
 
@@ -47,5 +50,140 @@ describe('reseller listings', () => {
       'xai/grok-code-fast-1': { litellm_provider: 'xai', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
     }
     expect(b.lookup('grok-code-fast-1')?.pricedAs).toBe('xai/grok-code-fast-1')
+  })
+})
+
+describe('price table loading', () => {
+  const realFetch = globalThis.fetch
+  const dirs: string[] = []
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  function tempCache(contents?: unknown) {
+    const dir = mkdtempSync(join(tmpdir(), 'pricing-test-'))
+    dirs.push(dir)
+    const path = join(dir, 'prices.json')
+    if (contents !== undefined) writeFileSync(path, JSON.stringify(contents))
+    return path
+  }
+
+  // A download that never answers until aborted, like a DNS black hole.
+  function stallingFetch() {
+    let calls = 0
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
+      calls++
+      return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)))
+    }) as typeof fetch
+    return () => calls
+  }
+
+  test('start() prices from the cache without waiting for the download', () => {
+    stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.start()
+    try {
+      expect(b.lookup('muse-wonder-1.0')?.pricedAs).toBe('meta/muse-wonder-1.0')
+      expect(b.loadedAt).not.toBeNull()
+    } finally {
+      b.stop()
+    }
+  })
+
+  test('a stalled download times out and keeps the cached table', async () => {
+    stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.load()
+    expect(await b.refresh(50)).toBe(false)
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('a non-JSON response does not replace the table', async () => {
+    globalThis.fetch = (async () => new Response('<html>captive portal</html>')) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache(TABLE))
+    b.load()
+    let refreshed = 0
+    b.onRefresh = () => refreshed++
+    expect(await b.refresh()).toBe(false)
+    expect(refreshed).toBe(0)
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('a JSON object with malformed entries does not replace the table', async () => {
+    for (const body of [{ 'test-model': null }, { 'test-model': { input_cost_per_token: 'free' } }, {}]) {
+      globalThis.fetch = (async () => new Response(JSON.stringify(body))) as unknown as typeof fetch
+      const cache = tempCache(TABLE)
+      const b = new PriceBook(openDb(':memory:'), cache)
+      b.load()
+      expect(await b.refresh()).toBe(false)
+      expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+      expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(TABLE)
+    }
+  })
+
+  test('malformed entries in an otherwise good table are skipped, not fatal', async () => {
+    const next = { ...TABLE, broken: null, half: { input_cost_per_token: 1e-6, output_cost_per_token: 'x' } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('broken')).toBeNull()
+    expect(b.lookup('half')).toBeNull()
+    expect(b.lookup('muse-wonder-1.0')).not.toBeNull()
+  })
+
+  test('an unusable first-party entry falls through to a reseller listing', async () => {
+    const next = {
+      'test-model': { litellm_provider: 'openai', input_cost_per_token: 'bad', output_cost_per_token: 1e-6 },
+      'reseller/test-model': { litellm_provider: 'azure', input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 },
+    }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('test-model')?.pricedAs).toBe('reseller/test-model')
+  })
+
+  test('a failed cache write keeps the previous cache intact', async () => {
+    const next = { 'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const cache = tempCache(TABLE)
+    mkdirSync(`${cache}.${process.pid}.tmp`) // the temp file can't be written
+    const b = new PriceBook(openDb(':memory:'), cache)
+    expect(await b.refresh()).toBe(true)
+    expect(b.lookup('claude-opus-5-5')).not.toBeNull()
+    expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(TABLE)
+  })
+
+  test('stop() during a refresh schedules nothing afterwards', async () => {
+    let release!: (r: Response) => void
+    globalThis.fetch = (() => new Promise<Response>((resolve) => (release = resolve))) as unknown as typeof fetch
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    const first = b.start()
+    expect(b.start()).toBe(first) // idempotent while running
+    b.stop()
+    release(new Response(JSON.stringify(TABLE)))
+    expect(await first).toBe(true)
+    expect((b as unknown as { timer?: unknown }).timer).toBeUndefined()
+  })
+
+  test('a good download replaces the table, writes the cache and notifies', async () => {
+    const next = { 'claude-opus-5-5': { litellm_provider: 'anthropic', input_cost_per_token: 5e-6, output_cost_per_token: 2.5e-5 } }
+    globalThis.fetch = (async () => new Response(JSON.stringify(next))) as unknown as typeof fetch
+    const cache = tempCache()
+    const b = new PriceBook(openDb(':memory:'), cache)
+    b.load()
+    let refreshed = 0
+    b.onRefresh = () => refreshed++
+    expect(await b.refresh()).toBe(true)
+    expect(refreshed).toBe(1)
+    expect(b.lookup('claude-opus-5-5')?.rates.input).toBe(5_000_000)
+    expect(JSON.parse(readFileSync(cache, 'utf8'))).toEqual(next)
+  })
+
+  test('concurrent refreshes share one download', async () => {
+    const calls = stallingFetch()
+    const b = new PriceBook(openDb(':memory:'), tempCache())
+    await Promise.all([b.refresh(50), b.refresh(50)])
+    expect(calls()).toBe(1)
   })
 })
