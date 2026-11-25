@@ -52,4 +52,26 @@ describe('ThemeMenu', () => {
     fireEvent.pointerDown(document.body)
     expect(ui.queryByRole('menu')).toBeNull()
   })
+
+  test('moves focus to the active option on open and supports arrow-key navigation', () => {
+    const ui = within(render(<ThemeMenu />).container)
+    const trigger = ui.getByRole('button', { name: 'Theme: System' })
+
+    fireEvent.click(trigger)
+    const menu = ui.getByRole('menu', { name: 'Theme' })
+    const light = within(menu).getByRole('menuitemradio', { name: 'Light' })
+    const dark = within(menu).getByRole('menuitemradio', { name: 'Dark' })
+    const system = within(menu).getByRole('menuitemradio', { name: 'System' })
+
+    expect(document.activeElement).toBe(system)
+
+    fireEvent.keyDown(menu, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(light)
+
+    fireEvent.keyDown(menu, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(dark)
+
+    fireEvent.keyDown(menu, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(light)
+  })
 })

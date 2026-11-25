@@ -25,6 +25,12 @@ export function ThemeMenu() {
 
   useEffect(() => {
     if (!open) return
+    const idx = OPTIONS.findIndex((o) => o.value === preference)
+    itemRefs.current[idx >= 0 ? idx : 0]?.focus()
+  }, [open, preference])
+
+  useEffect(() => {
+    if (!open) return
     const onPointerDown = (e: PointerEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
     }
