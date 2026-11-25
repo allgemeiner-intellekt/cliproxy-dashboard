@@ -101,6 +101,10 @@ docker run -d --name cliproxy-dashboard --restart unless-stopped \
 
 The image has a `HEALTHCHECK`. It fails, and `GET /api/health` returns 503, once the collector has been disconnected from CLIProxyAPI for more than 2 minutes.
 
+### Auto-deploy hook
+
+[`deploy/hook.ts`](deploy/hook.ts) runs on the TrueNAS host and redeploys the app when CI asks. CI calls it after `:main` is promoted, if the `DEPLOY_HOOK_URL` repository variable and the `DEPLOY_SECRET` secret are set. Every request is HMAC-signed with a timestamp. A deploy request is accepted only once within the 5-minute window, and job status requires a signature too. The file header has the details.
+
 ## Security
 
 - **The dashboard has no login.** Anyone who can reach it can read usage and device data, rename machines (`PUT`/`DELETE /api/devices/name`), and import historical transcripts (`POST /api/import`). It binds to `127.0.0.1` by default; to reach it from elsewhere, use an SSH tunnel, `tailscale serve` with Tailnet ACLs, or a reverse proxy with its own authentication. Do not expose it directly to an untrusted network.
@@ -129,6 +133,19 @@ npm run dev           # Vite on 127.0.0.1:5173, proxying /api to the server
 | `npm run build` | Type-check and build the frontend into `dist/` |
 | `bun test` | Tests |
 | `npm run db:generate` | Generate a migration after editing `server/src/db/schema.ts` |
+
+### Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/) and are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
+1. In a PR, set `version` in `package.json` (`npm version --no-git-tag-version X.Y.Z`) and move the `Unreleased` notes in `CHANGELOG.md` into a `## [X.Y.Z] - YYYY-MM-DD` section.
+2. After it merges and CI on main has published the image, tag that commit and push the tag:
+
+   ```sh
+   git tag -a vX.Y.Z -m vX.Y.Z <merge-commit> && git push origin vX.Y.Z
+   ```
+
+CI checks that the tag matches `package.json` and has a CHANGELOG section. It then tags the image main published as `ghcr.io/allgemeiner-intellekt/cliproxy-dashboard:X.Y.Z` (and `:X.Y`), and creates the GitHub release from the CHANGELOG section.
 
 ### Importing earlier history
 

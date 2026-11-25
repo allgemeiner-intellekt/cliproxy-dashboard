@@ -1,10 +1,14 @@
 // Deploy receiver: CI asks it to redeploy a TrueNAS app after publishing an image.
 //
 //   POST /deploy            {"app": "<name>"}  signed, returns 202 {"job": <id>}
-//   GET  /deploy/jobs/:id   state of a job this receiver started
+//   GET  /deploy/jobs/:id   signed, state of a job this receiver started
 //
-// Requests are signed with HMAC-SHA256 over `${timestamp}.${body}` using
-// DEPLOY_SECRET, sent as X-Deploy-Timestamp and X-Deploy-Signature (hex).
+// Requests are signed with HMAC-SHA256 using DEPLOY_SECRET, sent as
+// X-Deploy-Timestamp (unix seconds) and X-Deploy-Signature (hex):
+//   POST: over `${timestamp}.${body}`
+//   GET:  over `${timestamp}.job ${id}`, e.g. `1790000000.job 7`
+// The timestamp must be within 5 minutes. Each POST signature is accepted
+// once, so a captured request can't be replayed inside that window.
 // Only apps listed in DEPLOY_APPS can be redeployed. The TrueNAS key
 // (DEPLOY_TRUENAS_KEY_FILE) never leaves this machine.
 //
@@ -15,6 +19,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
 const MAX_SKEW_S = 300
+const MAX_BODY_BYTES = 4096
+const MAX_JOBS = 100
 const secret = required('DEPLOY_SECRET')
 const apps = new Set(required('DEPLOY_APPS').split(',').map((a) => a.trim()))
 const truenasKey = readFileSync(required('DEPLOY_TRUENAS_KEY_FILE'), 'utf8').trim()
@@ -26,12 +32,36 @@ function required(name: string) {
   return value
 }
 
-function signed(timestamp: string, signature: string, body: string) {
+function signed(req: Request, payload: string) {
+  const timestamp = req.headers.get('x-deploy-timestamp') ?? ''
+  const signature = req.headers.get('x-deploy-signature') ?? ''
+  if (!/^\d{1,12}$/.test(timestamp) || !/^[0-9a-f]{64}$/i.test(signature)) return false
   const age = Math.abs(Date.now() / 1000 - Number(timestamp))
-  if (!Number.isFinite(age) || age > MAX_SKEW_S) return false
-  const expected = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest()
-  const given = Buffer.from(signature, 'hex')
-  return given.length === expected.length && timingSafeEqual(given, expected)
+  if (age > MAX_SKEW_S) return false
+  const expected = createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest()
+  return timingSafeEqual(Buffer.from(signature, 'hex'), expected)
+}
+
+// POST signatures seen within the skew window, with when they stop being valid.
+const usedSignatures = new Map<string, number>()
+
+function firstUse(req: Request) {
+  const now = Date.now() / 1000
+  for (const [sig, expires] of usedSignatures) if (expires < now) usedSignatures.delete(sig)
+  const signature = req.headers.get('x-deploy-signature')!.toLowerCase()
+  if (usedSignatures.has(signature)) return false
+  usedSignatures.set(signature, Number(req.headers.get('x-deploy-timestamp')) + MAX_SKEW_S + 1)
+  return true
+}
+
+function appFrom(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    const app = typeof parsed === 'object' && parsed !== null ? (parsed as { app?: unknown }).app : undefined
+    return typeof app === 'string' ? app : null
+  } catch {
+    return null
+  }
 }
 
 // A logged-in JSON-RPC session. TrueNAS only shows a job to the session that
@@ -72,14 +102,24 @@ async function session() {
 type JobState = { state: 'RUNNING' | 'SUCCESS' | 'FAILED'; error: string | null }
 const jobs = new Map<number, JobState>()
 
+function track(job: number, state: JobState) {
+  jobs.delete(job)
+  jobs.set(job, state)
+  // Maps iterate in insertion order: drop the oldest.
+  for (const id of jobs.keys()) {
+    if (jobs.size <= MAX_JOBS) break
+    jobs.delete(id)
+  }
+}
+
 async function redeploy(app: string) {
   const s = await session()
   try {
     const job = Number(await s.call('app.redeploy', [app]))
-    jobs.set(job, { state: 'RUNNING', error: null })
+    track(job, { state: 'RUNNING', error: null })
     s.call('core.job_wait', [job])
-      .then(() => jobs.set(job, { state: 'SUCCESS', error: null }))
-      .catch((err: Error) => jobs.set(job, { state: 'FAILED', error: err.message }))
+      .then(() => track(job, { state: 'SUCCESS', error: null }))
+      .catch((err: Error) => track(job, { state: 'FAILED', error: err.message }))
       .finally(s.close)
     return job
   } catch (err) {
@@ -91,15 +131,16 @@ async function redeploy(app: string) {
 Bun.serve({
   hostname: '127.0.0.1',
   port: Number(process.env.DEPLOY_PORT ?? 30091),
+  maxRequestBodySize: MAX_BODY_BYTES,
   async fetch(req) {
     const url = new URL(req.url)
 
     if (req.method === 'POST' && url.pathname === '/deploy') {
       const body = await req.text()
-      if (!signed(req.headers.get('x-deploy-timestamp') ?? '', req.headers.get('x-deploy-signature') ?? '', body)) {
-        return Response.json({ error: 'bad signature' }, { status: 401 })
-      }
-      const app = JSON.parse(body).app
+      if (!signed(req, body)) return Response.json({ error: 'bad signature' }, { status: 401 })
+      if (!firstUse(req)) return Response.json({ error: 'signature already used' }, { status: 409 })
+      const app = appFrom(body)
+      if (app === null) return Response.json({ error: 'body must be {"app": "<name>"}' }, { status: 400 })
       if (!apps.has(app)) return Response.json({ error: `${app} is not deployable` }, { status: 403 })
       let job: number
       try {
@@ -113,8 +154,12 @@ Bun.serve({
     }
 
     const match = url.pathname.match(/^\/deploy\/jobs\/(\d+)$/)
-    const job = match && jobs.get(Number(match[1]))
-    if (req.method === 'GET' && job) return Response.json(job)
+    if (req.method === 'GET' && match) {
+      // Job errors come from TrueNAS, so only signed callers see them.
+      if (!signed(req, `job ${match[1]}`)) return Response.json({ error: 'bad signature' }, { status: 401 })
+      const job = jobs.get(Number(match[1]))
+      if (job) return Response.json(job)
+    }
 
     return Response.json({ error: 'not found' }, { status: 404 })
   },
