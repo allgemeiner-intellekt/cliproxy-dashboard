@@ -57,6 +57,18 @@ const FIRST_PARTY = ['anthropic', 'openai', 'gemini', 'vertex_ai-language-models
 // Placeholder or alias names that don't identify a billable model.
 const NEVER_PRICED = new Set(['<synthetic>', 'synthetic', 'opus', 'sonnet', 'haiku', 'fable'])
 
+// Explicit API-equivalent mappings for models that CLIProxyAPI records under
+// shorthand or subscription-only names. Keys are either "provider/model"
+// (checked first) or bare "model", lowercased; values are exact LiteLLM table keys.
+const BUILT_IN_ALIASES: Record<string, string> = {
+  'kimi/k3': 'moonshot/kimi-k3',
+  'kimi/k3.1-pro': 'moonshot/kimi-k3.1-pro',
+  'kimi/k3.1-pro-highspeed': 'moonshot/kimi-k3.1-pro-highspeed',
+  'kimi/kimi-for-coding': 'tencent/kimi-k2.8-preview',
+  'kimi/kimi-for-coding-highspeed': 'tencent/kimi-k2.7-code-highspeed',
+  'gemini-4-neon-xhigh': 'gemini/gemini-4-neon',
+}
+
 // Muse models the price table doesn't list, priced by their nearest listed
 // sibling: Wonder Full is subscription-only (never sold per token), so it
 // takes standard Wonder's rates; unlisted "-contributor" variants take the
@@ -72,13 +84,17 @@ type Priced = { rates: Rates; pricedAs: string }
 
 export class PriceBook {
   private table: Record<string, LiteLlmEntry> = {}
-  // lookup() results by raw model name; a miss scans the whole table, and
-  // repricing or a busy collector asks for the same few models constantly.
+  private aliases: Record<string, string> = { ...BUILT_IN_ALIASES }
+  // lookup() results by provider + raw model name; a miss scans the whole table,
+  // and repricing or a busy collector asks for the same few models constantly.
   private lookups = new Map<string, Priced | null>()
   loadedAt: number | null = null
   lastRepriceError: string | null = null
 
-  constructor(private cachePath: string) {}
+  constructor(
+    private cachePath: string,
+    private aliasesPath?: string,
+  ) {}
 
   get path(): string {
     return this.cachePath
@@ -100,9 +116,10 @@ export class PriceBook {
   private timer?: ReturnType<typeof setTimeout>
   private running: Promise<boolean> | null = null
 
-  // Loads the cached table from disk. Synchronous, so pricing works from the
-  // last good table before any download.
+  // Loads the cached table and optional alias overrides from disk. Synchronous,
+  // so pricing works from the last good table before any download.
   load() {
+    this.loadAliases()
     this.loadCache()
   }
 
@@ -148,6 +165,7 @@ export class PriceBook {
       console.warn(`[pricing] refresh failed, keeping ${this.loadedAt ? 'cached' : 'empty'} table: ${(err as Error).message}`)
       return false
     }
+    this.loadAliases()
     this.setTable(table)
     this.loadedAt = Date.now()
     try {
@@ -179,6 +197,40 @@ export class PriceBook {
     return true
   }
 
+  private loadAliases() {
+    if (!this.aliasesPath) {
+      this.aliases = { ...BUILT_IN_ALIASES }
+      this.lookups.clear()
+      return
+    }
+    let text: string
+    try {
+      text = readFileSync(this.aliasesPath, 'utf8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`[pricing] could not read price aliases: ${(err as Error).message}`)
+      }
+      this.aliases = { ...BUILT_IN_ALIASES }
+      this.lookups.clear()
+      return
+    }
+    try {
+      const raw: unknown = JSON.parse(text)
+      if (!isObject(raw)) throw new Error('price aliases file is not a JSON object')
+      const merged: Record<string, string> = { ...BUILT_IN_ALIASES }
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v !== 'string') continue
+        const key = k.trim().toLowerCase()
+        const target = v.trim()
+        if (key && target) merged[key] = target
+      }
+      this.aliases = merged
+      this.lookups.clear()
+    } catch (err) {
+      console.warn(`[pricing] ignoring unreadable price aliases: ${(err as Error).message}`)
+    }
+  }
+
   private loadCache() {
     let text: string
     try {
@@ -195,18 +247,26 @@ export class PriceBook {
     }
   }
 
-  // Finds rates for a model name, returning the entry name used.
-  lookup(rawModel: string): Priced | null {
-    let priced = this.lookups.get(rawModel)
+  // Finds rates for a model name (optionally scoped by provider), returning the entry name used.
+  lookup(rawModel: string, provider?: string): Priced | null {
+    const cacheKey = `${provider ?? ''}\0${rawModel}`
+    let priced = this.lookups.get(cacheKey)
     if (priced === undefined) {
-      priced = this.find(normalizeModel(rawModel))
-      this.lookups.set(rawModel, priced)
+      priced = this.find(normalizeModel(rawModel), provider?.trim().toLowerCase() || undefined)
+      this.lookups.set(cacheKey, priced)
     }
     return priced
   }
 
-  private find(model: string): Priced | null {
+  private find(model: string, provider?: string): Priced | null {
     if (NEVER_PRICED.has(model)) return null
+
+    const aliasTarget = (provider ? this.aliases[`${provider}/${model}`] : undefined) ?? this.aliases[model]
+    if (aliasTarget) {
+      const entry = this.table[aliasTarget]
+      const priced = entry ? this.toRates(aliasTarget, entry) : null
+      if (priced) return { rates: priced.rates, pricedAs: `fallback:${aliasTarget}` }
+    }
 
     const exact = this.table[model]
     if (exact && FIRST_PARTY.includes(exact.litellm_provider ?? '')) return this.toRates(model, exact)

@@ -270,3 +270,56 @@ describe('first-party preference', () => {
     expect(costOf({ input: 250_000, cacheRead: 0, cacheWrite: 0, output: 10_000 }, priced!.rates)).toBe(775_000)
   })
 })
+
+describe('explicit model aliases', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  const ALIAS_TABLE = {
+    'moonshot/kimi-k3': { litellm_provider: 'moonshot', input_cost_per_token: 6e-7, output_cost_per_token: 2.5e-6 },
+    'moonshot/kimi-k3.1-pro': { litellm_provider: 'moonshot', input_cost_per_token: 1e-6, output_cost_per_token: 4e-6 },
+    'moonshot/kimi-k3.1-pro-highspeed': { litellm_provider: 'moonshot', input_cost_per_token: 2e-6, output_cost_per_token: 8e-6 },
+    'tencent/kimi-k2.8-preview': { litellm_provider: 'tencent', input_cost_per_token: 5e-7, output_cost_per_token: 2e-6 },
+    'tencent/kimi-k2.7-code-highspeed': { litellm_provider: 'tencent', input_cost_per_token: 1.5e-6, output_cost_per_token: 6e-6 },
+    'gemini/gemini-4-neon': { litellm_provider: 'gemini', input_cost_per_token: 1.25e-6, output_cost_per_token: 1e-5 },
+  }
+
+  test('maps built-in kimi and gemini aliases to exact LiteLLM entries with fallback: prefix', () => {
+    const b = new PriceBook('/nonexistent/prices.json')
+    ;(b as unknown as { setTable: (t: unknown) => void }).setTable(ALIAS_TABLE)
+
+    expect(b.lookup('k3', 'kimi')).toMatchObject({
+      pricedAs: 'fallback:moonshot/kimi-k3',
+      rates: { input: 600_000, output: 2_500_000 },
+    })
+    expect(b.lookup('k3.1-pro', 'kimi')?.pricedAs).toBe('fallback:moonshot/kimi-k3.1-pro')
+    expect(b.lookup('k3.1-pro-highspeed', 'kimi')).toMatchObject({
+      pricedAs: 'fallback:moonshot/kimi-k3.1-pro-highspeed',
+      rates: { input: 2_000_000, output: 8_000_000 },
+    })
+    expect(b.lookup('kimi-for-coding', 'kimi')?.pricedAs).toBe('fallback:tencent/kimi-k2.8-preview')
+    expect(b.lookup('kimi-for-coding-highspeed', 'kimi')?.pricedAs).toBe('fallback:tencent/kimi-k2.7-code-highspeed')
+    expect(b.lookup('gemini-4-neon-xhigh', 'antigravity')?.pricedAs).toBe('fallback:gemini/gemini-4-neon')
+    // Provider-scoped kimi aliases do not match unrelated providers.
+    expect(b.lookup('k3', 'openai')).toBeNull()
+  })
+
+  test('external aliases file overrides built-in mappings and survives refresh', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pricing-alias-test-'))
+    dirs.push(dir)
+    const cachePath = join(dir, 'prices.json')
+    const aliasesPath = join(dir, 'aliases.json')
+    writeFileSync(cachePath, JSON.stringify(ALIAS_TABLE))
+    writeFileSync(aliasesPath, JSON.stringify({ 'kimi/kimi-for-coding': 'moonshot/kimi-k3.1-pro', 'custom/model': 'gemini/gemini-4-neon' }))
+
+    const b = new PriceBook(cachePath, aliasesPath)
+    b.load()
+
+    expect(b.lookup('kimi-for-coding', 'kimi')?.pricedAs).toBe('fallback:moonshot/kimi-k3.1-pro')
+    expect(b.lookup('model', 'custom')?.pricedAs).toBe('fallback:gemini/gemini-4-neon')
+    // Unoverridden built-in alias still works.
+    expect(b.lookup('k3', 'kimi')?.pricedAs).toBe('fallback:moonshot/kimi-k3')
+  })
+})

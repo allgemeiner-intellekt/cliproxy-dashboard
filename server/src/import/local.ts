@@ -32,7 +32,7 @@ function readTranscripts(tool: TranscriptFile['tool'], dir: string): TranscriptF
 
 const env = storageEnv()
 const db = openDb(env.databasePath)
-const prices = new PriceBook(env.priceCachePath)
+const prices = new PriceBook(env.priceCachePath, env.priceAliasesPath)
 // One-shot: wait (bounded) for a fresh table, else price from the cache.
 prices.load()
 await prices.refresh()
