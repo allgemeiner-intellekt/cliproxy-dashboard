@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# One run per ref. PR runs replace each other; main runs queue, so image
-# pushes and deploys happen in commit order.
+# PR runs replace each other. Main runs don't share a group; the publish and
+# deploy jobs queue instead, so no passing commit is dropped.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
@@ -34,26 +34,68 @@ jobs:
       - name: Check migrations match the schema
         run: |
           npx drizzle-kit check
-          npx drizzle-kit generate
-          if [ -n "$(git status --porcelain -- server/drizzle)" ]; then
+          # Builds one database from the migrations and one from the schema
+          # and compares them. Catches hand-edited migration SQL.
+          bun scripts/check-migrations.ts
+          # Also catches a stale snapshot. A change drizzle-kit can only
+          # resolve interactively (e.g. a rename) prints an error and exits 0,
+          # so require the explicit no-change message.
+          out=$(npx drizzle-kit generate 2>&1 </dev/null) || { echo "$out"; exit 1; }
+          echo "$out"
+          if ! grep -q 'No schema changes' <<<"$out" || [ -n "$(git status --porcelain -- server/drizzle)" ]; then
             git status --porcelain -- server/drizzle
-            echo "::error::server/src/db/schema.ts changed without a migration. Run 'npm run db:generate' and commit server/drizzle/."
+            echo "::error::server/src/db/schema.ts changed without a matching migration. Run 'npm run db:generate' and commit server/drizzle/."
             exit 1
           fi
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
-  # PRs build the image without pushing; main pushes it once check passes.
+  # Builds the image without pushing (PRs and manual runs on other branches).
   image:
     needs: check
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Pushes the image from main once check passes. Only the tip of main is
+  # tagged :main, so a rerun of an older run can't roll the tag back.
+  publish:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
-    env:
-      PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    concurrency:
+      group: publish-main
+      queue: max
+    outputs:
+      latest: ${{ steps.tip.outputs.latest }}
     steps:
+      - id: tip
+        name: Check this commit is the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo latest=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $tip, not $GITHUB_SHA. Pushing the SHA tag only."
+            echo latest=false >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
@@ -63,10 +105,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ steps.tip.outputs.latest == 'true' }}
             type=sha,format=long,prefix=
-      - if: env.PUSH == 'true'
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -74,24 +115,37 @@ jobs:
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          push: ${{ env.PUSH == 'true' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          provenance: ${{ env.PUSH == 'true' && 'mode=max' || 'false' }}
-          sbom: ${{ env.PUSH == 'true' }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_HOOK_URL != ''
+    needs: publish
+    if: needs.publish.outputs.latest == 'true' && vars.DEPLOY_HOOK_URL != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
       group: deploy
-      cancel-in-progress: false
+      queue: max
     steps:
+      - id: tip
+        name: Check this commit is still the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo latest=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $tip, not $GITHUB_SHA. Skipping the deploy; the newer run deploys."
+            echo latest=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Deploy
+        if: steps.tip.outputs.latest == 'true'
         env:
           DEPLOY_SECRET: ${{ secrets.DEPLOY_SECRET }}
           DEPLOY_HOOK_URL: ${{ vars.DEPLOY_HOOK_URL }}
